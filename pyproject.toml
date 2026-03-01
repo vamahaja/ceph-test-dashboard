@@ -1,0 +1,11 @@
+[project]
+name = "ceph-test-dashboard"
+version = "0.1.0"
+description = "Ceph Teuthology test dashboard"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "pandas>=2.3.3",
+    "requests>=2.32.5",
+    "streamlit>=1.54.0",
+]
