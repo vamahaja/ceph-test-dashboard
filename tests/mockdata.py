@@ -21,10 +21,8 @@ def _generate_connected_data():
     Generate mock data for teuthology runs and jobs with a one-to-many relationship.
     A run can have between 10 and 20 jobs.
     """
-    num_runs = 10
-    runs_data = []
-    jobs_data = []
-    job_counter = 0
+    num_runs, job_counter = 10, 0
+    runs_data, jobs_data = [], []
 
     for i in range(num_runs):
         run_name = f"run-{i}-{np.random.choice(["ubuntu", "centos", "debian"])}"
@@ -34,8 +32,10 @@ def _generate_connected_data():
 
         run = {
             "name": run_name,
-            "status": np.random.choice(["pass", "fail", "running", "queued"]),
+            "status": np.random.choice(["pass", "fail", "running", "queued", "dead"]),
             "user": np.random.choice(["user-a", "user-b", "user-c"]),
+            "suite": np.random.choice(["rados", "rbd", "rgw", "fs", "krbd"]),
+            "branch": np.random.choice(["main", "quincy", "pacific", "reef"]),
             "scheduled": (
                 datetime.now() - timedelta(minutes=np.random.randint(0, 1440))
             ).isoformat(),
@@ -51,12 +51,14 @@ def _generate_connected_data():
                 "job_id": str(job_counter),
                 "run_name": run_name,
                 "success": np.random.choice([True, False]),
-                "status": np.random.choice(["pass", "fail", "running", "queued"]),
+                "status": np.random.choice(["pass", "fail", "running", "queued", "dead"]),
                 "description": f"job description {job_counter}",
-                "machine_type": np.random.choice(["type-a", "type-b"]),
-                "os_type": np.random.choice(["ubuntu", "centos"]),
+                "machine_type": np.random.choice(["smithi", "mira", "plana"]),
+                "os_type": np.random.choice(["ubuntu", "centos", "rhel"]),
+                "os_version": np.random.choice(["20.04", "22.04", "8", "9"]),
                 "duration": np.random.uniform(300, 3600),
                 "owner": np.random.choice(["owner-x", "owner-y"]),
+                "failure_reason": np.random.choice(["Timeout", "Error", ""]),
                 "posted": (
                     datetime.now() - timedelta(minutes=np.random.randint(0, 720))
                 ).isoformat(),
