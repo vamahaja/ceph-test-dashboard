@@ -17,18 +17,17 @@ run_names = df_runs["name"].tolist()
 
 # Get test run to show jobs
 selected_run = st.selectbox("Select a run to view its jobs:", run_names)
-run_name = selected_run
 
 # Get jobs data (TODO: Change to fetch data from api)
-jobs_data = get_jobs_data()
+jobs_data = get_jobs_data(selected_run)
 if not jobs_data:
-    st.info("No jobs data found.")
+    st.info(f"No jobs exist for run `{selected_run}`.")
     st.stop()
 
 # Convert to DataFrame
 df_jobs = pd.DataFrame(jobs_data)
 if df_jobs.empty:
-    st.info(f"No jobs exist for run `{run_name}`.")
+    st.info(f"No jobs exist for run `{selected_run}`.")
 
 # Calculate simple metrics
 total_jobs = len(df_jobs)
@@ -39,12 +38,16 @@ pass_count = (
 fail_count = (
     df_jobs["success"].eq(False).sum() if has_success else 0
 )
+queued_count = df_jobs["status"].eq("queued").sum()
+running_count = df_jobs["status"].eq("running").sum()
 
 # Display metrics
-col1, col2, col3 = st.columns(3)
+col1, col2, col3, col4, col5 = st.columns(5)
 col1.metric("Total Jobs", total_jobs)
 col2.metric("Passed", pass_count)
 col3.metric("Failed", fail_count)
+col4.metric("Queued", queued_count)
+col5.metric("Running", running_count)
 
 # Add page divider
 st.divider()
