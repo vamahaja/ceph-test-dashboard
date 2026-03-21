@@ -3,9 +3,11 @@ import numpy as np
 import streamlit as st
 from datetime import datetime, timedelta
 
-def get_jobs_data():
+def get_jobs_data(run_name=None):
     """Generate mock data for teuthology jobs"""
     _, jobs = _generate_connected_data()
+    if run_name:
+        jobs = [job for job in jobs if job["run_name"] == run_name]
     return jobs
 
 
