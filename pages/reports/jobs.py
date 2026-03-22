@@ -19,7 +19,7 @@ run_names = df_runs["name"].tolist()
 selected_run = st.selectbox("Select a run to view its jobs:", run_names)
 
 # Get jobs data (TODO: Change to fetch data from api)
-jobs_data = get_jobs_data(selected_run)
+jobs_data = get_jobs_data(run_name=selected_run)
 if not jobs_data:
     st.info(f"No jobs exist for run `{selected_run}`.")
     st.stop()

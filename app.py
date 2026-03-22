@@ -17,6 +17,11 @@ testruns = st.Page(
     title="Test Runs",
     icon=":material/play_arrow:"
 )
+reports = st.Page(
+    "pages/reports/reports.py",
+    title="Reports",
+    icon=":material/play_arrow:"
+)
 alerts = st.Page(
     "pages/reports/alerts.py",
     title="Alerts",
@@ -38,7 +43,7 @@ history = st.Page(
 # Set navigations
 pg = st.navigation(
     {
-        "Reports": [dashboard, testruns, jobs, alerts],
+        "Reports": [dashboard, testruns, jobs, reports, alerts],
         "Tools": [search, history],
     }
 )

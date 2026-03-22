@@ -3,11 +3,15 @@ import numpy as np
 import streamlit as st
 from datetime import datetime, timedelta
 
-def get_jobs_data(run_name=None):
+def get_jobs_data(run_name=None, branch_name=None):
     """Generate mock data for teuthology jobs"""
     _, jobs = _generate_connected_data()
     if run_name:
         jobs = [job for job in jobs if job["run_name"] == run_name]
+
+    if branch_name:
+        jobs = [job for job in jobs if job["branch"] == branch_name]
+
     return jobs
 
 
@@ -27,7 +31,7 @@ def _generate_connected_data():
     runs_data, jobs_data = [], []
 
     for i in range(num_runs):
-        run_name = f"run-{i}-{np.random.choice(["ubuntu", "centos", "debian"])}"
+        run_name = f"run-{i}-{np.random.choice(["ubuntu", "centos", "rocky"])}"
         num_jobs_for_run = np.random.randint(10, 21)
 
         run_job_ids = [str(job_counter + j) for j in range(num_jobs_for_run)]
@@ -36,8 +40,8 @@ def _generate_connected_data():
             "name": run_name,
             "status": np.random.choice(["pass", "fail", "running", "queued", "dead"]),
             "user": np.random.choice(["user-a", "user-b", "user-c"]),
-            "suite": np.random.choice(["rados", "rbd", "rgw", "fs", "krbd"]),
-            "branch": np.random.choice(["main", "quincy", "pacific", "reef"]),
+            "suite": np.random.choice(["smoke", "rados", "rbd", "rgw", "fs", "krbd"]),
+            "branch": np.random.choice(["main", "tentacle", "squid", "reef", "quincy", "pacific"]),
             "scheduled": (
                 datetime.now() - timedelta(minutes=np.random.randint(0, 1440))
             ).isoformat(),
@@ -54,10 +58,11 @@ def _generate_connected_data():
                 "run_name": run_name,
                 "success": np.random.choice([True, False]),
                 "status": np.random.choice(["pass", "fail", "running", "queued", "dead"]),
+                "branch": np.random.choice(["main", "tentacle", "squid", "reef", "quincy", "pacific"]),
                 "description": f"job description {job_counter}",
                 "machine_type": np.random.choice(["smithi", "mira", "plana"]),
                 "os_type": np.random.choice(["ubuntu", "centos", "rhel"]),
-                "os_version": np.random.choice(["20.04", "22.04", "8", "9"]),
+                "os_version": np.random.choice(["20.04", "22.04", "8", "9", "10"]),
                 "duration": np.random.uniform(300, 3600),
                 "owner": np.random.choice(["owner-x", "owner-y"]),
                 "failure_reason": np.random.choice(["Timeout", "Error", ""]),
