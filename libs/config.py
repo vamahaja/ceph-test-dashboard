@@ -48,3 +48,16 @@ def get_base_url():
         )
 
     return paddles.get("base_url")
+
+
+def get_pulpito_url() -> str | None:
+    """
+    Reads the configuration and returns the Pulpito base URL, or None if
+    the [pulpito] section or base_url key is absent (Pulpito is optional).
+    """
+    try:
+        config = read_config()
+    except FileNotFoundError:
+        return None
+    pulpito = config.get("pulpito", {})
+    return pulpito.get("base_url") or None

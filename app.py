@@ -27,6 +27,11 @@ alerts = st.Page(
     title="Alerts",
     icon=":material/notification_important:"
 )
+release = st.Page(
+    "pages/reports/release.py",
+    title="Releases",
+    icon=":material/new_releases:",
+)
 
 # Tools pages
 search = st.Page(
@@ -43,7 +48,7 @@ history = st.Page(
 # Set navigations
 pg = st.navigation(
     {
-        "Reports": [dashboard, testruns, jobs, reports, alerts],
+        "Reports": [dashboard, release, testruns, jobs, reports, alerts],
         "Tools": [search, history],
     }
 )
