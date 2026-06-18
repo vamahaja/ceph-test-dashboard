@@ -59,3 +59,19 @@ Before you begin, ensure you have the following installed:
     ```
 
     The application will be accessible in your web browser at the local URL provided by Streamlit (usually `http://localhost:8501`).
+
+## Pages
+
+| Page | Path | Description |
+|------|------|-------------|
+| Dashboard | `pages/reports/dashboard.py` | Overview with KPIs, daily trends, status distribution, and top failures |
+| Test Runs | `pages/reports/testruns.py` | Run-level analysis by branch, suite, and cloud platform |
+| Jobs | `pages/reports/jobs.py` | Job-level detail, failure patterns, and duration analysis |
+| Alerts | `pages/reports/alerts.py` | Automated alerts for high failure rates, dead jobs, and flaky suites |
+| Releases | `pages/reports/release.py` | Release health dashboard for stable branches (tentacle, squid, umbrella) |
+| Search | `pages/tools/search.py` | Search runs and jobs |
+| History | `pages/tools/history.py` | Historical trends |
+
+## Architecture
+
+The normalizer layer (`libs/normalizer.py`) fetches data from the Paddles API and normalises records into a consistent schema used by all dashboard pages.

@@ -1,2 +1,5 @@
 [paddles]
 base_url = http://paddles.example.com
+
+[pulpito]
+base_url = http://pulpito.example.com
