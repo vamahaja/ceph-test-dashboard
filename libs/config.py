@@ -12,7 +12,7 @@ class ConfigError(Exception):
 def read_config():
     """
     Reads the configuration file from ~/.config/ceph-test-dashboard.ini
-    and returns a ConfigParser object.
+    and returns a dictionary of sections.
     """
     config_path = os.path.expanduser(CONFIG_FILE)
     if not os.path.exists(config_path):
@@ -20,7 +20,9 @@ def read_config():
             f"Configuration file not found at {config_path}"
         )
 
-    return configparser.ConfigParser().read(config_path)
+    parser = configparser.ConfigParser()
+    parser.read(config_path)
+    return {section: dict(parser[section]) for section in parser.sections()}
 
 
 def get_paddle_config():
@@ -45,4 +47,4 @@ def get_base_url():
             "'base_url' not found in paddles section of configuration file"
         )
 
-    return paddles.get("paddles", "base_url")
+    return paddles.get("base_url")
