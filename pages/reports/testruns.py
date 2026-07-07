@@ -1,7 +1,7 @@
 import pandas as pd
 import streamlit as st
 
-from tests.mockdata import get_runs_data
+from libs.normalizer import get_runs_data
 
 
 # Set page title and markdown
@@ -11,8 +11,7 @@ st.markdown(
 )
 st.markdown("Displaying the latest 100 runs reported to Paddles.")
 
-# Get teuthology runs (TODO: Change to fetch data from api)
-runs_data = get_runs_data() 
+runs_data = get_runs_data()
 if not runs_data:
     st.info(
         "Please ensure your Paddles API URL is correct and "

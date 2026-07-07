@@ -2,7 +2,7 @@ import pandas as pd
 import streamlit as st
 import altair as alt
 
-from tests.mockdata import get_jobs_data, get_runs_data
+from libs.normalizer import get_jobs_data, get_runs_data
 
 # Set page title
 st.markdown(
@@ -10,7 +10,6 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# Get runs data to find the latest run (TODO: Change to fetch data from api)
 runs_data = get_runs_data()
 df_runs = pd.DataFrame(runs_data)
 df_runs["posted"] = pd.to_datetime(df_runs["posted"])
@@ -19,7 +18,6 @@ branch_names = df_runs["branch"].unique().tolist()
 # Get test run to show jobs
 selected_branch = st.selectbox("Select a branch to view reports:", branch_names)
 
-# Get jobs data (TODO: Change to fetch data from api)
 jobs_data = get_jobs_data(branch_name=selected_branch)
 if not jobs_data:
     st.info(f"No jobs exist for run `{selected_branch}`.")
@@ -88,13 +86,13 @@ comparison_chart = alt.Chart(comparison_df).mark_bar().encode(
 col1, col2, col3 = st.columns(3)
 with col1:
     st.subheader(f"Branch: {selected_branch}")
-    st.altair_chart(pie_chart_branch, use_container_width=True)
+    st.altair_chart(pie_chart_branch, width="stretch")
 with col2:
     st.subheader(f"Last Run: {last_run_name}")
-    st.altair_chart(pie_chart_last_run, use_container_width=True)
+    st.altair_chart(pie_chart_last_run, width="stretch")
 with col3:
     st.subheader("Comparison of Last Two Runs")
-    st.altair_chart(comparison_chart, use_container_width=True)
+    st.altair_chart(comparison_chart, width="stretch")
 
 
 # Line chart for pass, fail, running, queued and dead
@@ -124,20 +122,23 @@ pct_chart = alt.Chart(df_jobs).mark_bar().encode(
 ).properties(
     height=400
 )
-st.altair_chart(pct_chart, use_container_width=True)
+st.altair_chart(pct_chart, width="stretch")
 
 # Top 10 Common Failures
 st.subheader("Top 10 Common Failure Reasons")
-failures_df = df_jobs[(df_jobs["status"] == "fail") & (df_jobs["failure_reason"] != "")]
+failure_col = "failure_template" if "failure_template" in df_jobs.columns else "failure_reason"
+failures_df = df_jobs[
+    (df_jobs["status"] == "fail")
+    & df_jobs[failure_col].notna()
+    & (df_jobs[failure_col] != "")
+]
 if not failures_df.empty:
-    failure_counts = failures_df["failure_reason"].value_counts().nlargest(10).reset_index()
+    failure_counts = failures_df[failure_col].value_counts().nlargest(10).reset_index()
     failure_counts.columns = ["failure_reason", "count"]
 
-    # Calculate percentage
     total_failures = failure_counts["count"].sum()
     failure_counts["percentage"] = (failure_counts["count"] / total_failures) * 100
 
-    # Prepare table
     failure_counts.index = failure_counts.index + 1
     failure_counts.rename(
         columns={
@@ -156,7 +157,7 @@ if not failures_df.empty:
         column_config={
             "Percentage": st.column_config.NumberColumn(format="%.2f%%")
         },
-        use_container_width=True,
+        width="stretch",
         hide_index=True
     )
 else:
