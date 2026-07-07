@@ -2,7 +2,7 @@ import pandas as pd
 import streamlit as st
 
 from datetime import datetime
-from tests.mockdata import get_jobs_data, get_runs_data
+from libs.normalizer import get_jobs_data, get_runs_data
 
 
 # Set page configuration
@@ -20,7 +20,6 @@ now = datetime.now()
 current_month = now.month
 current_year = now.year
 
-# Fetch runs and jobs data (TODO: Change to fetch data from api)
 runs_data = get_runs_data()
 jobs_data = get_jobs_data()
 if not runs_data or not jobs_data:

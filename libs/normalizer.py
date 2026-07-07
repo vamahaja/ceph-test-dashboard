@@ -119,17 +119,33 @@ def get_runs_data(count: int = 100) -> list[dict]:
 
 
 @st.cache_data(ttl=60)
-def get_jobs_data(run_name: str | None = None) -> list[dict]:
+def get_jobs_data(
+    run_name: str | None = None,
+    branch_name: str | None = None,
+) -> list[dict]:
     """
     Return a list of normalised job dicts from the Paddles API.
-    If run_name is given, fetches jobs for that specific run.
-    Otherwise fetches jobs across the latest runs.
+
+    - run_name: fetches jobs for that specific run.
+    - branch_name: fetches runs for the branch, then jobs for each run.
+    - Neither: fetches jobs across the latest 20 runs.
     """
     try:
         if run_name:
             raw = get_jobs_for_run(run_name)
             if raw:
                 return [_normalise_job(j, run_name) for j in raw]
+        elif branch_name:
+            runs = get_runs_by_branch(branch_name, count=50)
+            if runs:
+                jobs: list[dict] = []
+                for run in runs[:20]:
+                    rname = run.get("name", "")
+                    rjobs = get_jobs_for_run(rname)
+                    if rjobs:
+                        jobs.extend(_normalise_job(j, rname) for j in rjobs)
+                if jobs:
+                    return jobs
         else:
             runs = get_runs(count=50)
             if runs:

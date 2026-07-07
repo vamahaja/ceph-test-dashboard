@@ -1,7 +1,7 @@
 import pandas as pd
 import streamlit as st
 
-from tests.mockdata import get_jobs_data, get_runs_data
+from libs.normalizer import get_jobs_data, get_runs_data
 
 # Set page title
 st.markdown(
@@ -9,7 +9,6 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# Get runs data to find the latest run (TODO: Change to fetch data from api)
 runs_data = get_runs_data()
 df_runs = pd.DataFrame(runs_data)
 df_runs["posted"] = pd.to_datetime(df_runs["posted"])
@@ -18,7 +17,6 @@ run_names = df_runs["name"].tolist()
 # Get test run to show jobs
 selected_run = st.selectbox("Select a run to view its jobs:", run_names)
 
-# Get jobs data (TODO: Change to fetch data from api)
 jobs_data = get_jobs_data(run_name=selected_run)
 if not jobs_data:
     st.info(f"No jobs exist for run `{selected_run}`.")
