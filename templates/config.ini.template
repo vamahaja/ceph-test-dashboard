@@ -4,5 +4,8 @@ base_url = http://paddles.example.com
 [pulpito]
 base_url = http://pulpito.example.com
 
+[nightly]
+run_user = jenkins-build
+
 [cache]
 ttl = 3600
