@@ -69,6 +69,19 @@ def get_cache_ttl() -> int:
         return DEFAULT_CACHE_TTL
 
 
+def get_nightly_run_user() -> str:
+    """
+    Reads the nightly run user from config, or returns the default
+    'jenkins-build' if not configured.
+    """
+    try:
+        config = read_config()
+    except FileNotFoundError:
+        return "jenkins-build"
+    nightly = config.get("nightly", {})
+    return nightly.get("run_user", "jenkins-build")
+
+
 def get_pulpito_url() -> str | None:
     """
     Reads the configuration and returns the Pulpito base URL, or None if
