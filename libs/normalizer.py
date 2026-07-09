@@ -21,8 +21,10 @@ from __future__ import annotations
 
 import streamlit as st
 
-from libs.config import get_base_url
+from libs.config import get_base_url, get_cache_ttl
 from libs.api import get_runs, get_jobs_for_run, get_runs_by_branch
+
+_TTL = get_cache_ttl()
 
 
 def _normalise_run(raw: dict) -> dict:
@@ -106,7 +108,7 @@ def _normalise_job(raw: dict, run_name: str = "") -> dict:
     }
 
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=_TTL)
 def get_runs_data(count: int = 100) -> list[dict]:
     """Return a list of normalised run dicts from the Paddles API."""
     try:
@@ -118,7 +120,7 @@ def get_runs_data(count: int = 100) -> list[dict]:
     return []
 
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=_TTL)
 def get_jobs_data(
     run_name: str | None = None,
     branch_name: str | None = None,
@@ -162,7 +164,7 @@ def get_jobs_data(
     return []
 
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=_TTL)
 def get_runs_by_branch_data(branch: str, count: int = 100) -> list[dict]:
     """Return normalised runs for a specific branch from the Paddles API."""
     try:
