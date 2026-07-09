@@ -1,5 +1,10 @@
 import streamlit as st
 
+_, refresh_col = st.columns([5, 1])
+with refresh_col:
+    if st.button("🔄 Refresh"):
+        st.cache_data.clear()
+
 # Reports pages
 dashboard = st.Page(
     "pages/reports/dashboard.py",

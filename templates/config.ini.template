@@ -3,3 +3,6 @@ base_url = http://paddles.example.com
 
 [pulpito]
 base_url = http://pulpito.example.com
+
+[cache]
+ttl = 3600

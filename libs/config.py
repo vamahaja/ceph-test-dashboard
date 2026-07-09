@@ -50,6 +50,25 @@ def get_base_url():
     return paddles.get("base_url")
 
 
+DEFAULT_CACHE_TTL = 3600
+
+
+def get_cache_ttl() -> int:
+    """
+    Reads the cache TTL (in seconds) from config, or returns the default
+    of 3600 seconds (1 hour) if not configured.
+    """
+    try:
+        config = read_config()
+    except FileNotFoundError:
+        return DEFAULT_CACHE_TTL
+    cache = config.get("cache", {})
+    try:
+        return int(cache.get("ttl", DEFAULT_CACHE_TTL))
+    except (ValueError, TypeError):
+        return DEFAULT_CACHE_TTL
+
+
 def get_pulpito_url() -> str | None:
     """
     Reads the configuration and returns the Pulpito base URL, or None if
