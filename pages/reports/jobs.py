@@ -22,7 +22,8 @@ if failure_filter:
 
     drill_run_names = st.session_state.get("drill_run_names", [])
     if not drill_run_names:
-        st.warning("No run names passed from the nightly page.")
+        source_label = "builds" if source_filter == "builds" else "nightly"
+        st.warning(f"No run names passed from the {source_label} page.")
         st.stop()
 
     all_jobs = []

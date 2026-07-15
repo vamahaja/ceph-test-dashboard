@@ -9,7 +9,7 @@ field names used throughout the dashboard pages:
 
 Runs fields:
   name, branch, suite, sha_id, cloud_platform, status, user,
-  scheduled, posted, job_ids, results, total_jobs
+  scheduled, posted, started, updated, job_ids, results, total_jobs
 
 Jobs fields:
   job_id, run_name, branch, suite, sha_id, cloud_platform,
@@ -65,6 +65,8 @@ def _normalise_run(raw: dict) -> dict:
         "user":           raw.get("user", ""),
         "scheduled":      raw.get("scheduled", raw.get("posted", "")),
         "posted":         raw.get("posted", ""),
+        "started":        raw.get("started", ""),
+        "updated":        raw.get("updated", ""),
         "job_ids":        [],
         "results":        results,
         "total_jobs":     total,
