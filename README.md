@@ -69,6 +69,8 @@ Before you begin, ensure you have the following installed:
 | Jobs | `pages/reports/jobs.py` | Job-level detail, failure patterns, and duration analysis |
 | Alerts | `pages/reports/alerts.py` | Automated alerts for high failure rates, dead jobs, and flaky suites |
 | Releases | `pages/reports/release.py` | Release health dashboard for stable branches (tentacle, squid, umbrella) |
+| Nightly | `pages/reports/nightly.py` | Nightly regression analysis with branch filtering, OS-wise breakdown, and job-level daily trends |
+| Builds | `pages/reports/builds.py` | Build-centric analysis for a specific branch/commit SHA with health scorecard, per-SHA comparison, suite health, OS distribution, and failure drill-down |
 | Search | `pages/tools/search.py` | Search runs and jobs |
 | History | `pages/tools/history.py` | Historical trends |
 

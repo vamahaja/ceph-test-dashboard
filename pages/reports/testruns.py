@@ -23,7 +23,8 @@ if failure_filter:
 
     drill_run_records = st.session_state.get("drill_run_records", [])
     if not drill_run_records:
-        st.warning("No run data passed from the nightly page.")
+        source_label = "builds" if source_filter == "builds" else "nightly"
+        st.warning(f"No run data passed from the {source_label} page.")
         st.stop()
 
     df_runs = pd.DataFrame(drill_run_records)
