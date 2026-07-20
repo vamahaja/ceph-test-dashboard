@@ -1,0 +1,9 @@
+services:
+  dashboard:
+    image: ceph-test-dashboard:latest
+    container_name: ceph-test-dashboard
+    ports:
+      - "${DASHBOARD_PORT:-8501}:8501"
+    volumes:
+      - ${CONFIG_FILE:-~/.config/ceph-test-dashboard.ini}:/home/appuser/.config/ceph-test-dashboard.ini:ro,Z
+    restart: unless-stopped
