@@ -60,6 +60,10 @@ Before you begin, ensure you have the following installed:
 
     The application will be accessible in your web browser at the local URL provided by Streamlit (usually `http://localhost:8501`).
 
+## Container Deployment
+
+See [`deployment/README.md`](deployment/README.md) for full Podman deployment instructions.
+
 ## Pages
 
 | Page | Path | Description |
