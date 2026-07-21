@@ -3,6 +3,8 @@ import os
 
 CONFIG_FILE = os.path.expanduser('~/.config/ceph-test-dashboard.ini')
 
+DEFAULT_CACHE_TTL = 3600
+
 
 class ConfigError(Exception):
     """Base class for configuration errors."""
@@ -48,9 +50,6 @@ def get_base_url():
         )
 
     return paddles.get("base_url")
-
-
-DEFAULT_CACHE_TTL = 3600
 
 
 def get_cache_ttl() -> int:
