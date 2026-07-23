@@ -75,6 +75,7 @@ See [`deployment/README.md`](deployment/README.md) for full Podman deployment in
 | Releases | `pages/reports/release.py` | Release health dashboard for stable branches (tentacle, squid, umbrella) |
 | Nightly | `pages/reports/nightly.py` | Nightly regression analysis with branch filtering, OS-wise breakdown, and job-level daily trends |
 | Builds | `pages/reports/builds.py` | Build-centric analysis for a specific branch/commit SHA with health scorecard, per-SHA comparison, suite health, OS distribution, and failure drill-down |
+| Coverage | `pages/reports/coverage.py` | Suite-centric view comparing coverage, failures, and flaky tests across branches |
 | Search | `pages/tools/search.py` | Search runs and jobs |
 | History | `pages/tools/history.py` | Historical trends |
 
