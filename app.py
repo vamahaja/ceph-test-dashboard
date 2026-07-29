@@ -52,6 +52,11 @@ coverage = st.Page(
     title="Coverage",
     icon=":material/labs:",
 )
+hardware = st.Page(
+    "pages/reports/hardware.py",
+    title="Hardware",
+    icon=":material/memory:",
+)
 
 # Tools pages
 search = st.Page(
@@ -68,7 +73,7 @@ history = st.Page(
 # Set navigations
 pg = st.navigation(
     {
-        "Reports": [dashboard, release, nightly, builds, coverage, testruns, jobs, reports, alerts],
+        "Reports": [dashboard, release, nightly, builds, coverage, hardware, testruns, jobs, reports, alerts],
         "Tools": [search, history],
     }
 )

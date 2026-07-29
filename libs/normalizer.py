@@ -19,12 +19,27 @@ Jobs fields:
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 import streamlit as st
 
-from libs.config import get_base_url, get_cache_ttl
-from libs.api import get_runs, get_jobs_for_run, get_runs_by_branch
+from libs.config import (
+    get_base_url,
+    get_cache_ttl,
+    get_hardware_config,
+)
+from libs.api import (
+    get_jobs_for_run,
+    get_nodes,
+    get_runs,
+    get_runs_by_branch,
+)
+
+# Single source of truth — hardware tuning values from libs/config.py
+_HW = get_hardware_config()
+from libs.hardware import build_arch_map_from_nodes
 
 _TTL = get_cache_ttl()
+_COMPLETED_STATUSES = {"pass", "fail", "dead"}
 
 
 def _normalise_run(raw: dict) -> dict:
@@ -91,9 +106,17 @@ def _normalise_job(raw: dict, run_name: str = "") -> dict:
     if success is None:
         success = status == "pass"
 
+    run = raw.get("run")
+    if isinstance(run, dict):
+        default_run_name = run.get("name", "") or ""
+    elif isinstance(run, str):
+        default_run_name = run
+    else:
+        default_run_name = ""
+
     return {
         "job_id":           str(raw.get("job_id", "")),
-        "run_name":         run_name or (raw.get("run") or {}).get("name", ""),
+        "run_name":         run_name or default_run_name,
         "branch":           raw.get("branch", ""),
         "suite":            raw.get("suite", ""),
         "sha_id":           raw.get("sha1", ""),
@@ -176,3 +199,192 @@ def get_runs_by_branch_data(branch: str, count: int = 100) -> list[dict]:
     except Exception as exc:
         st.warning(f"Paddles API error (runs by branch): {exc}")
     return []
+
+
+@st.cache_data(ttl=_TTL)
+def get_nodes_data(machine_type: str | None = None) -> list[dict]:
+    """Return raw node inventory records from Paddles ``/nodes/``."""
+    try:
+        raw = get_nodes(machine_type=machine_type)
+        if raw:
+            return list(raw)
+    except Exception as exc:
+        st.warning(f"Paddles API error (nodes): {exc}")
+    return []
+
+
+@st.cache_data(ttl=_TTL)
+def get_machine_type_arch_map() -> dict[str, str]:
+    """Return ``machine_type → arch`` from live Paddles node inventory."""
+    nodes = get_nodes_data()
+    return build_arch_map_from_nodes(nodes)
+
+
+@st.cache_data(ttl=_TTL)
+def get_machine_types_data() -> list[str]:
+    """Return sorted machine_type names from Paddles ``/nodes/``."""
+    nodes = get_nodes_data()
+    types = sorted(
+        {
+            (n.get("machine_type") or "").strip()
+            for n in nodes
+            if (n.get("machine_type") or "").strip()
+        }
+    )
+    return types
+
+
+@st.cache_data(ttl=_TTL)
+def get_machine_types_from_completed_runs(
+    count: int = 500,
+    days_window: int = 0,
+) -> list[str]:
+    """
+    Return machine types that appear on recent completed runs.
+
+    Prefer this for the Hardware page: Paddles ``/jobs/?machine_type=``
+    ignores the filter, so we only offer types that have usable run data.
+
+    Parameters
+    ----------
+    count : int
+        Number of recent runs to scan.
+    days_window : int
+        Only include machine types seen in runs posted within this many
+        days. 0 (default) means no date cutoff — return all types seen
+        in the last ``count`` runs regardless of age.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    runs = get_runs_data(count=count)
+
+    cutoff: datetime | None = None
+    if days_window and days_window > 0:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days_window)
+
+    result = set()
+    for r in runs:
+        if r.get("status") not in _COMPLETED_STATUSES:
+            continue
+        mt = (r.get("cloud_platform") or "").strip()
+        if not mt:
+            continue
+        if cutoff:
+            raw_posted = r.get("posted") or ""
+            try:
+                posted = datetime.fromisoformat(
+                    str(raw_posted).replace("Z", "+00:00")
+                )
+                if posted.tzinfo is None:
+                    posted = posted.replace(tzinfo=timezone.utc)
+                if posted < cutoff:
+                    continue
+            except (ValueError, TypeError):
+                pass  # unparseable date — include the run
+        result.add(mt)
+
+    return sorted(result)
+
+
+@st.cache_data(ttl=_TTL)
+def get_completed_jobs_for_machine_type(
+    machine_type: str,
+    run_scan: int = _HW["run_scan"],
+    max_runs: int = _HW["max_runs"],
+    days_window: int = _HW["days_window"],
+) -> list[dict]:
+    """
+    Return completed jobs (pass/fail/dead) for a machine_type.
+
+    Paddles ``/jobs/?machine_type=`` does not honour the filter and returns
+    the global latest queue (often queued/running). Instead we:
+
+    1. Scan the most recent ``run_scan`` runs from Paddles
+    2. Keep completed runs whose ``machine_type`` matches AND whose
+       ``posted`` timestamp falls within the last ``days_window`` days
+       (0 = no date cutoff)
+    3. Cap at ``max_runs`` matching runs
+    4. Load ``/runs/<name>/jobs/`` for each matching run
+
+    Parameters
+    ----------
+    machine_type : str
+        Lab machine class to filter on (case-insensitive).
+    run_scan : int
+        Number of recent runs to fetch from Paddles for scanning.
+        Default 200 — covers ~2–4 weeks of typical Ceph CI volume.
+    max_runs : int
+        Hard cap on matching runs whose jobs are loaded.
+        Default 60 — enough for reliable trend analysis.
+    days_window : int
+        Ignore runs older than this many days from now.
+        Default 0 — no date cutoff. Pages should always pass this
+        explicitly; never rely on the default for production use.
+        Set to a positive integer (e.g. 30) to restrict to recent runs.
+    """
+    mt = (machine_type or "").strip().lower()
+    if not mt:
+        return []
+
+    # Compute cutoff once (timezone-aware UTC)
+    cutoff: datetime | None = None
+    if days_window and days_window > 0:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days_window)
+
+    try:
+        raw_runs = get_runs(count=run_scan) or []
+    except Exception as exc:
+        st.warning(f"Paddles API error (runs): {exc}")
+        return []
+
+    matching_runs: list[dict] = []
+    for raw in raw_runs:
+        run = _normalise_run(raw)
+
+        # Date cutoff — Paddles returns runs newest-first, so once the
+        # posted timestamp is older than the cutoff we can stop scanning.
+        if cutoff and run.get("posted"):
+            try:
+                posted = datetime.fromisoformat(
+                    str(run["posted"]).replace("Z", "+00:00")
+                )
+                # Make naive datetimes timezone-aware (assume UTC)
+                if posted.tzinfo is None:
+                    posted = posted.replace(tzinfo=timezone.utc)
+                if posted < cutoff:
+                    break
+            except (ValueError, TypeError):
+                pass  # unparseable date — include the run, don't skip
+
+        if run["status"] not in _COMPLETED_STATUSES:
+            continue
+        if (run.get("cloud_platform") or "").strip().lower() != mt:
+            continue
+
+        matching_runs.append(run)
+        if len(matching_runs) >= max_runs:
+            break
+
+    jobs: list[dict] = []
+    for run in matching_runs:
+        try:
+            raw_jobs = get_jobs_for_run(run["name"]) or []
+        except Exception:
+            continue
+        for raw_job in raw_jobs:
+            job = _normalise_job(raw_job, run["name"])
+            if job["status"] not in _COMPLETED_STATUSES:
+                continue
+            job_mt = (
+                job.get("machine_type") or run.get("cloud_platform") or ""
+            ).strip().lower()
+            if job_mt and job_mt != mt:
+                continue
+            if not job.get("branch"):
+                job["branch"] = run.get("branch", "")
+            if not job.get("suite"):
+                job["suite"] = run.get("suite", "")
+            if not job.get("machine_type"):
+                job["machine_type"] = run.get("cloud_platform", "")
+            jobs.append(job)
+    return jobs

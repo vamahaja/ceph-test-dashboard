@@ -5,6 +5,21 @@ CONFIG_FILE = os.path.expanduser('~/.config/ceph-test-dashboard.ini')
 
 DEFAULT_CACHE_TTL = 3600
 
+# ── Hardware page defaults ────────────────────────────────────────────
+# Single source of truth for all hardware dashboard tuning parameters.
+# Override any value in ~/.config/ceph-test-dashboard.ini under [hardware]:
+#
+#   [hardware]
+#   run_scan    = 200
+#   max_runs    = 30
+#   min_runs    = 2
+#   days_window = 7
+#
+DEFAULT_HW_RUN_SCAN    = 200   # runs to scan from Paddles
+DEFAULT_HW_MAX_RUNS    = 30    # max matching runs to load jobs from
+DEFAULT_HW_MIN_RUNS    = 2     # warn if fewer matching runs found
+DEFAULT_HW_DAYS_WINDOW = 7     # ignore runs older than this many days
+
 
 class ConfigError(Exception):
     """Base class for configuration errors."""
@@ -79,6 +94,41 @@ def get_nightly_run_user() -> str:
         return "jenkins-build"
     nightly = config.get("nightly", {})
     return nightly.get("run_user", "jenkins-build")
+
+
+def get_hardware_config() -> dict:
+    """
+    Return hardware dashboard tuning parameters.
+
+    Values are read from the [hardware] section of the config file.
+    Falls back to DEFAULT_HW_* constants if the section or key is absent,
+    so the dashboard works with no config file changes required.
+
+    Returns a dict with keys:
+        run_scan    (int) — runs to scan from Paddles
+        max_runs    (int) — max matching runs to load jobs from
+        min_runs    (int) — warn threshold for thin data
+        days_window (int) — rolling window in days (0 = no cutoff)
+    """
+    try:
+        config = read_config()
+    except FileNotFoundError:
+        config = {}
+
+    hw = config.get("hardware", {})
+
+    def _int(key: str, default: int) -> int:
+        try:
+            return int(hw.get(key, default))
+        except (ValueError, TypeError):
+            return default
+
+    return {
+        "run_scan":    _int("run_scan",    DEFAULT_HW_RUN_SCAN),
+        "max_runs":    _int("max_runs",    DEFAULT_HW_MAX_RUNS),
+        "min_runs":    _int("min_runs",    DEFAULT_HW_MIN_RUNS),
+        "days_window": _int("days_window", DEFAULT_HW_DAYS_WINDOW),
+    }
 
 
 def get_pulpito_url() -> str | None:
