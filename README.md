@@ -76,6 +76,7 @@ See [`deployment/README.md`](deployment/README.md) for full Podman deployment in
 | Nightly | `pages/reports/nightly.py` | Nightly regression analysis with branch filtering, OS-wise breakdown, and job-level daily trends |
 | Builds | `pages/reports/builds.py` | Build-centric analysis for a specific branch/commit SHA with health scorecard, per-SHA comparison, suite health, OS distribution, and failure drill-down |
 | Coverage | `pages/reports/coverage.py` | Suite-centric view comparing coverage, failures, and flaky tests across branches |
+| Hardware | `pages/reports/hardware.py` | Machine-type-centric reliability dashboard comparing branches, suites, and OS for a selected lab class |
 | Search | `pages/tools/search.py` | Search runs and jobs |
 | History | `pages/tools/history.py` | Historical trends |
 
