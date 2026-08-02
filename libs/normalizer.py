@@ -133,16 +133,72 @@ def _normalise_job(raw: dict, run_name: str = "") -> dict:
     }
 
 
+def _parse_posted(value) -> datetime | None:
+    """Parse a run/job posted timestamp into an aware UTC datetime."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        ts = value
+    else:
+        text = str(value).replace("Z", "+00:00")
+        try:
+            ts = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return ts
+
+
 @st.cache_data(ttl=_TTL)
-def get_runs_data(count: int = 100) -> list[dict]:
+def get_runs_data(count: int = 100, page: int = 1) -> list[dict]:
     """Return a list of normalised run dicts from the Paddles API."""
     try:
-        raw = get_runs(count=count)
+        raw = get_runs(count=count, page=page)
         if raw:
             return [_normalise_run(r) for r in raw]
     except Exception as exc:
         st.warning(f"Paddles API error (runs): {exc}")
     return []
+
+
+@st.cache_data(ttl=_TTL)
+def get_runs_since(cutoff_iso: str, page_size: int = 100) -> list[dict]:
+    """
+    Return normalised runs with ``posted >= cutoff``, paging through
+    ``/runs/`` until the window is covered (no fixed scan cap).
+    """
+    cutoff = datetime.fromisoformat(cutoff_iso)
+    if cutoff.tzinfo is None:
+        cutoff = cutoff.replace(tzinfo=timezone.utc)
+
+    collected: list[dict] = []
+    page = 1
+    # Safety only — avoids an infinite loop if timestamps are missing.
+    max_pages = 500
+    try:
+        while page <= max_pages:
+            raw = get_runs(count=page_size, page=page) or []
+            if not raw:
+                break
+
+            reached_before_cutoff = False
+            for item in raw:
+                run = _normalise_run(item)
+                posted = _parse_posted(run.get("posted"))
+                if posted is not None and posted < cutoff:
+                    reached_before_cutoff = True
+                    continue
+                collected.append(run)
+
+            # Paddles returns newest-first; stop once a page crosses cutoff
+            # or returns a short final page.
+            if reached_before_cutoff or len(raw) < page_size:
+                break
+            page += 1
+    except Exception as exc:
+        st.warning(f"Paddles API error (runs since): {exc}")
+    return collected
 
 
 @st.cache_data(ttl=_TTL)

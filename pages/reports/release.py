@@ -6,7 +6,6 @@ from datetime import date, timedelta
 from libs.normalizer import get_jobs_data, get_runs_by_branch_data
 from libs.config import get_pulpito_url
 
-st.set_page_config(layout="wide")
 st.markdown(
     "<h1 style='text-align: center;'>📦 Release Health Dashboard</h1>",
     unsafe_allow_html=True,
