@@ -1,0 +1,74 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ceph-test-dashboard
+  namespace: ${DASHBOARD_NAMESPACE}
+  labels:
+    app.kubernetes.io/name: ceph-test-dashboard
+    app.kubernetes.io/component: web
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ceph-test-dashboard
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ceph-test-dashboard
+        app.kubernetes.io/component: web
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: dashboard
+          image: ${DASHBOARD_IMAGE}
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8501
+              protocol: TCP
+          env:
+            # Optional override; image default HOME=/home/appuser already matches
+            # the ConfigMap mount path used by Podman and this Deployment.
+            - name: CEPH_TEST_DASHBOARD_CONFIG
+              value: /home/appuser/.config/ceph-test-dashboard.ini
+          volumeMounts:
+            - name: config
+              mountPath: /home/appuser/.config/ceph-test-dashboard.ini
+              subPath: ceph-test-dashboard.ini
+              readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          livenessProbe:
+            httpGet:
+              path: /_stcore/health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /_stcore/health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+      volumes:
+        - name: config
+          configMap:
+            name: ceph-test-dashboard-config

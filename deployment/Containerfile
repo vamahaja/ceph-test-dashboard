@@ -24,20 +24,28 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # ── runtime ──────────────────────────────────────────────────────────
 FROM python:3.14-slim AS runtime
 
-ENV PATH="/app/.venv/bin:$PATH"
+# HOME is fixed so config and Streamlit paths resolve the same way under
+# Podman, Docker, and orchestrators that may override the process UID.
+ENV PATH="/app/.venv/bin:$PATH" \
+    HOME=/home/appuser
 
 RUN apt-get update && apt-get install -y --no-install-recommends curl && \
     rm -rf /var/lib/apt/lists/* && \
     groupadd -g 1001 appgroup && \
     useradd -u 1001 -g appgroup -m -d /home/appuser -s /bin/false appuser && \
-    mkdir -p /home/appuser/.config && \
-    chown -R appuser:appgroup /home/appuser
+    mkdir -p /home/appuser/.config /home/appuser/.streamlit && \
+    chown -R 1001:0 /home/appuser && \
+    chmod -R g=u /home/appuser
 
 WORKDIR /app
 
-COPY --from=build --chown=appuser:appgroup /app .
+COPY --from=build --chown=1001:0 /app .
 
-USER appuser
+# Writable by the default image user (1001) and by any assigned non-root
+# UID that shares the root group (common in Kubernetes-style runtimes).
+RUN chgrp -R 0 /app /home/appuser && chmod -R g=u /app /home/appuser
+
+USER 1001
 
 EXPOSE 8501
 

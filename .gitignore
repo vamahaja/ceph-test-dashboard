@@ -12,3 +12,6 @@ wheels/
 
 # Lock file
 uv.lock
+
+# OpenShift local deploy config (secrets / cluster-specific values)
+deployment/openshift/dashboard.config

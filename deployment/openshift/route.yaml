@@ -1,0 +1,21 @@
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: ceph-test-dashboard
+  namespace: ${DASHBOARD_NAMESPACE}
+  labels:
+    app.kubernetes.io/name: ceph-test-dashboard
+    app.kubernetes.io/component: web
+spec:
+  host: ${DASHBOARD_ROUTE_HOST}
+  to:
+    kind: Service
+    name: ceph-test-dashboard
+    weight: 100
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+  wildcardPolicy: None

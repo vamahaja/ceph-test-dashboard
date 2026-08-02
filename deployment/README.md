@@ -1,13 +1,21 @@
 # Deployment
 
-Deploy the Ceph Test Dashboard as a Podman container.
+Deploy the Ceph Test Dashboard with Podman locally, or on OpenShift.
 
 ## Prerequisites
+
+### Podman (local)
 
 - [Podman](https://podman.io/getting-started/installation) installed
 - [Podman Compose](https://github.com/containers/podman-compose) installed
 
-## Deployment Steps
+### OpenShift
+
+See [`openshift/README.md`](openshift/README.md) for the full OpenShift flow (`deploy.sh`, config template, cert-manager).
+
+---
+
+## Podman Deployment
 
 1. **Create the config file**
 
@@ -65,14 +73,14 @@ Deploy the Ceph Test Dashboard as a Podman container.
 
     Open your browser at `http://localhost:8501` (or the custom port you set).
 
-## Environment Variables
+### Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CONFIG_FILE` | `~/.config/ceph-test-dashboard.ini` | Path to the config file on the host |
 | `DASHBOARD_PORT` | `8501` | Host port to expose the dashboard on |
 
-## Managing the Service
+### Managing the Service
 
 Stop:
 
@@ -85,3 +93,27 @@ View logs:
 ```sh
 podman-compose -f deployment/podman-compose.yaml logs -f
 ```
+
+---
+
+## OpenShift Deployment
+
+OpenShift manifests and the deploy script live under [`openshift/`](openshift/) (`deploy.sh` + config template + `envsubst`).
+
+Quick start:
+
+```sh
+cd deployment/openshift
+cp ./dashboard.config.tmpl ./dashboard.config
+# edit dashboard.config — set namespace, image, route host, paddles/pulpito URLs
+chmod +x ./deploy.sh
+./deploy.sh --dashboard-config ./dashboard.config
+```
+
+Without cert-manager (use the default router certificate):
+
+```sh
+./deploy.sh --dashboard-config ./dashboard.config --skip-cert
+```
+
+Full details: [`openshift/README.md`](openshift/README.md).
