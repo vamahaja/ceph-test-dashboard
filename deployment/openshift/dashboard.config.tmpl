@@ -1,0 +1,21 @@
+# Namespace for the dashboard Deployment, Service, Route, and ConfigMap
+DASHBOARD_NAMESPACE="<your-dashboard-namespace>"
+
+# Route host (DNS name on the Route and TLS certificate)
+DASHBOARD_ROUTE_HOST="<your-route-host>"
+
+# Container image (build/push before deploy)
+DASHBOARD_IMAGE="image-registry.openshift-image-registry.svc:5000/<namespace>/ceph-test-dashboard:latest"
+
+# Paddles / Pulpito API URLs (written into the ConfigMap INI)
+PADDLES_BASE_URL="https://paddles.example.com"
+PULPITO_BASE_URL="https://pulpito.example.com"
+
+# Nightly run owner filter
+NIGHTLY_RUN_USER="jenkins-build"
+
+# Streamlit / normalizer cache TTL (seconds)
+CACHE_TTL="3600"
+
+# cert-manager ClusterIssuer name (self-signed issuer defined in cert.yaml)
+CERT_MANAGER_ISSUER_NAME="<your-cluster-issuer-name>"

@@ -1,0 +1,28 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ceph-test-dashboard-config
+  namespace: ${DASHBOARD_NAMESPACE}
+  labels:
+    app.kubernetes.io/name: ceph-test-dashboard
+    app.kubernetes.io/component: config
+data:
+  ceph-test-dashboard.ini: |
+    [paddles]
+    base_url = ${PADDLES_BASE_URL}
+
+    [pulpito]
+    base_url = ${PULPITO_BASE_URL}
+
+    [nightly]
+    run_user = ${NIGHTLY_RUN_USER}
+
+    [cache]
+    ttl = ${CACHE_TTL}
+
+    [hardware]
+    run_scan = 200
+    max_runs = 30
+    min_runs = 2
+    days_window = 7

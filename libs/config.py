@@ -1,7 +1,36 @@
 import configparser
 import os
 
-CONFIG_FILE = os.path.expanduser('~/.config/ceph-test-dashboard.ini')
+# Default INI location for local runs and the container image user home.
+_DEFAULT_CONFIG_NAME = "ceph-test-dashboard.ini"
+_IMAGE_CONFIG_PATH = f"/home/appuser/.config/{_DEFAULT_CONFIG_NAME}"
+
+
+def _resolve_config_file() -> str:
+    """
+    Resolve the dashboard INI path for local, Podman, and cluster runs.
+
+    Order:
+    1. ``CEPH_TEST_DASHBOARD_CONFIG`` if set and the file exists
+    2. ``~/.config/ceph-test-dashboard.ini`` (respects ``HOME``)
+    3. ``/home/appuser/.config/ceph-test-dashboard.ini`` (container default)
+    """
+    candidates = (
+        os.environ.get("CEPH_TEST_DASHBOARD_CONFIG"),
+        os.path.join(
+            os.path.expanduser("~"),
+            ".config",
+            _DEFAULT_CONFIG_NAME,
+        ),
+        _IMAGE_CONFIG_PATH,
+    )
+    for path in candidates:
+        if path and os.path.isfile(path):
+            return path
+    return os.path.join(os.path.expanduser("~"), ".config", _DEFAULT_CONFIG_NAME)
+
+
+CONFIG_FILE = _resolve_config_file()
 
 DEFAULT_CACHE_TTL = 3600
 
@@ -28,10 +57,11 @@ class ConfigError(Exception):
 
 def read_config():
     """
-    Reads the configuration file from ~/.config/ceph-test-dashboard.ini
-    and returns a dictionary of sections.
+    Reads the dashboard configuration file and returns a dictionary of sections.
+
+    See ``_resolve_config_file`` for path resolution order.
     """
-    config_path = os.path.expanduser(CONFIG_FILE)
+    config_path = _resolve_config_file()
     if not os.path.exists(config_path):
         raise FileNotFoundError(
             f"Configuration file not found at {config_path}"

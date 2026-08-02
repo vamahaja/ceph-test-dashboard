@@ -1,0 +1,22 @@
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: ${CERT_MANAGER_ISSUER_NAME}
+spec:
+  selfSigned: {}
+
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: ceph-test-dashboard-certificate
+  namespace: ${DASHBOARD_NAMESPACE}
+spec:
+  commonName: ${DASHBOARD_ROUTE_HOST}
+  dnsNames:
+    - ${DASHBOARD_ROUTE_HOST}
+  issuerRef:
+    name: ${CERT_MANAGER_ISSUER_NAME}
+    kind: ClusterIssuer
+  secretName: ceph-test-dashboard-tls
