@@ -361,7 +361,7 @@ else:
             if st.button(f"View {jobs_count} Impacted Jobs →"):
                 st.session_state["drill_run_names"] = impacted_run_names
                 st.switch_page(
-                    "pages/reports/jobs.py",
+                    "pages/dashboard/jobs.py",
                     query_params={"failure_reason": selected_reason, "source": "builds"},
                 )
         with col_r:
@@ -369,6 +369,6 @@ else:
                 st.session_state["drill_run_names"] = impacted_run_names
                 st.session_state["drill_run_records"] = impacted_runs_records
                 st.switch_page(
-                    "pages/reports/testruns.py",
+                    "pages/dashboard/testruns.py",
                     query_params={"failure_reason": selected_reason, "source": "builds"},
                 )
