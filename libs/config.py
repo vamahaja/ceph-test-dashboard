@@ -1,6 +1,8 @@
 import configparser
 import os
 
+from libs.exceptions import ConfigError
+
 # Default INI location for local runs and the container image user home.
 _DEFAULT_CONFIG_NAME = "ceph-test-dashboard.ini"
 _IMAGE_CONFIG_PATH = f"/home/appuser/.config/{_DEFAULT_CONFIG_NAME}"
@@ -50,11 +52,6 @@ DEFAULT_HW_MIN_RUNS    = 2     # warn if fewer matching runs found
 DEFAULT_HW_DAYS_WINDOW = 7     # ignore runs older than this many days
 
 
-class ConfigError(Exception):
-    """Base class for configuration errors."""
-    pass
-
-
 def read_config():
     """
     Reads the dashboard configuration file and returns a dictionary of sections.
@@ -72,29 +69,58 @@ def read_config():
     return {section: dict(parser[section]) for section in parser.sections()}
 
 
-def get_paddle_config():
+def _as_bool(value, default: bool = True) -> bool:
     """
-    Reads paddle config from config file and returns a dictionary.
+    Coerce config values to bool.
+
+    Accepts: True/False, 0/1, "true"/"false", None, "".
+    """
+    if value is None or value == "":
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    text = str(value).strip().lower()
+    if text in ("1", "true", "yes", "on"):
+        return True
+    if text in ("0", "false", "no", "off"):
+        return False
+    raise ConfigError(
+        f"Invalid boolean value: {value!r}"
+    )
+
+
+def get_paddle_config() -> dict:
+    """
+    Reads paddle config from config file
     """
     config = read_config()
     if not config or "paddles" not in config:
-        raise ConfigError("paddles section not found in configuration file")
-
-    return config.get("paddles", {})
-
-
-def get_base_url():
-    """
-    Reads the configuration and returns the Paddles base URL.
-    Falls back to a default value if not found.
-    """
-    paddles = get_paddle_config()
-    if "base_url" not in paddles:
         raise ConfigError(
-            "'base_url' not found in paddles section of configuration file"
+            "paddles section not found in configuration file"
         )
 
-    return paddles.get("base_url")
+    paddles = config.get("paddles", {})
+    unset = [
+        param
+        for param in ("base_url",)
+        if not paddles.get(param)
+    ]
+    if unset:
+        raise ConfigError(
+            f"Missing required parameters: {', '.join(unset)}"
+        )
+
+    tls_verify = _as_bool(
+        paddles.get("tls_verify"),
+        default=True,
+    )
+    return {
+        "base_url": paddles.get("base_url"),
+        "timeout": paddles.get("timeout", 60),
+        "tls_verify": tls_verify,
+    }
 
 
 def get_cache_ttl() -> int:

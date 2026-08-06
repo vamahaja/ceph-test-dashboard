@@ -23,7 +23,6 @@ from datetime import datetime, timedelta, timezone
 import streamlit as st
 
 from libs.config import (
-    get_base_url,
     get_cache_ttl,
     get_hardware_config,
 )
