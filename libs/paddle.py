@@ -14,6 +14,16 @@ class Paddles:
         self.timeout = int(self.config["timeout"])
         self.tls_verify = self.config["tls_verify"]
 
+    def __post_init__(self) -> None:
+        self._check_connection()
+
+    def _check_connection(self) -> None:
+        """Check if the Paddles API is reachable."""
+        try:
+            self._get("/")
+        except PaddlesAPIError as e:
+            raise PaddlesAPIError(f"Unable to connect to Paddles API: {e}") from e
+
     def _get(self, endpoint: str, params: dict | None = None):
         """Fetch data from the Paddles API."""
         url = f"{self.base_url.rstrip('/')}{endpoint}"
@@ -46,14 +56,18 @@ class Paddles:
         suite: str | None = None,
         status: str | None = None,
         user: str | None = None,
+        date: str | None = None,
+        date_start: str | None = None,
+        date_end: str | None = None,
         count: int = 0,
         page: int = 0,
     ):
         """Fetch runs from the Paddles API.
 
         Single-run lookup uses ``/runs/{name}/``. Filters use path segments
-        (e.g. ``/runs/branch/{branch}/status/{status}/``). Pagination uses
-        query params.
+        (e.g. ``/runs/branch/{branch}/status/{status}/``). Date filters use
+        ``/runs/date/{YYYY-MM-DD}/`` or ``/runs/date/from/{start}/to/{end}/``
+        (scheduled date). Pagination uses query params.
         """
         params: dict = {}
         if count and count > 0:
@@ -75,6 +89,20 @@ class Paddles:
             parts.extend(["status", self._path_segment(status)])
         if user:
             parts.extend(["user", self._path_segment(user)])
+
+        start = (date_start or "").strip() or None
+        end = (date_end or "").strip() or None
+        single = (date or "").strip() or None
+        if start and end and start == end:
+            parts.extend(["date", start])
+        elif start and end:
+            parts.extend(["date", "from", start, "to", end])
+        elif start:
+            parts.extend(["date", "from", start, "to", end or start])
+        elif end:
+            parts.extend(["date", end])
+        elif single:
+            parts.extend(["date", single])
 
         if parts:
             return self._get(f"/runs/{'/'.join(parts)}/", params=params)
