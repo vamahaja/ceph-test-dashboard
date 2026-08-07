@@ -2,6 +2,7 @@ import streamlit as st
 
 from libs.paddle import Paddles
 
+
 @st.cache_data(ttl=60)
 def get_runs(count: int = 100, page: int = 1):
     """Fetch the latest runs from Paddles."""
@@ -29,33 +30,30 @@ def get_runs_by_suite(suite: str, count: int = 100):
 @st.cache_data(ttl=60)
 def get_jobs_for_run(run_name: str):
     """Fetch all jobs belonging to a specific run."""
-    return Paddles().run(run_name=run_name)
+    return Paddles().jobs_for_run(run_name)
 
 
 @st.cache_data(ttl=60)
 def get_job(run_name: str, job_id: str):
     """Fetch a single job by run name and job ID."""
-    return Paddles().run(run_name=run_name, job_id=job_id)
+    return Paddles().job(run_name=run_name, job_id=job_id)
 
 
 @st.cache_data(ttl=60)
 def get_jobs_by_status(status: str, count: int = 100):
     """Fetch jobs filtered by status."""
-    return Paddles().job(status=status, count=count)
+    return Paddles().jobs(status=status, count=count)
 
 
 @st.cache_data(ttl=60)
 def get_jobs_by_machine_type(machine_type: str, count: int = 100):
     """Fetch jobs filtered by machine type."""
-    return Paddles().job(machine_type=machine_type, count=count)
+    return Paddles().jobs(machine_type=machine_type, count=count)
 
 
 @st.cache_data(ttl=120)
 def get_nodes(machine_type: str | None = None):
     """Fetch machine/node information."""
-    endpoint = "/nodes/"
-    if machine_type:
-        endpoint += f"?machine_type={machine_type}"
     return Paddles().node(machine_type=machine_type)
 
 
