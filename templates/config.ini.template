@@ -16,3 +16,11 @@ refresh_minutes = 60
 
 [release]
 branches = main, umbrella, tentacle, squid
+
+[llm]
+base_url = https://api.example.com/v1
+model = your-model-id
+api_key = your-api-key
+; timeout = 600
+; max_tokens = 4096
+; context_length = 65536

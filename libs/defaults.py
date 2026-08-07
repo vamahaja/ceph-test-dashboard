@@ -92,3 +92,20 @@ def status_row_styles(row) -> list[str]:
     """Pandas Styler callback: tint a table row by its ``status`` cell."""
     style = STATUS_ROW_COLORS.get(row.get("status", ""), "")
     return [style] * len(row)
+
+
+# LLM client / OpenAI-compatible API
+DEFAULT_LLM_TIMEOUT = 600
+DEFAULT_LLM_MAX_TOKENS = 4096
+DEFAULT_LLM_INTENT_MAX_TOKENS = 1024
+DEFAULT_LLM_CONTEXT_LENGTH = 65536
+DEFAULT_LLM_API_KEY = "not-needed"
+
+# LLM tool fetch / response packing
+DEFAULT_LLM_MAX_TOOL_CHARS = 32_000
+DEFAULT_LLM_SEARCH_COUNT = 100
+DEFAULT_LLM_JOB_COUNT = 160
+DEFAULT_LLM_JOBS_IN_RESPONSE = 60
+DEFAULT_LLM_TOP_N = 40
+DEFAULT_LLM_DATE_SEARCH_COUNT = 500
+

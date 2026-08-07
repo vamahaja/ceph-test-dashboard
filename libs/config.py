@@ -5,6 +5,9 @@ from libs.defaults import (
     DEFAULT_CONFIG_DIR,
     DEFAULT_CONFIG_NAME,
     DEFAULT_HW_MIN_RUNS,
+    DEFAULT_LLM_CONTEXT_LENGTH,
+    DEFAULT_LLM_MAX_TOKENS,
+    DEFAULT_LLM_TIMEOUT,
     DEFAULT_NIGHTLY_RUN_USER,
     DEFAULT_PADDLE_TLS_VERIFY,
     DEFAULT_PADDLE_TIMEOUT,
@@ -78,6 +81,14 @@ def _as_int(value) -> int:
         raise ConfigError(
             f"Invalid integer value: {text!r}"
         )
+
+
+def _strip_ini_value(value: str) -> str:
+    """Strip whitespace and optional surrounding quotes from an INI value."""
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        return value[1:-1].strip()
+    return value
 
 
 def get_paddle_config() -> dict:
@@ -191,3 +202,41 @@ def get_pulpito_url() -> str | None:
         )
 
     return pulpito.get("base_url")
+
+
+def get_llm_config() -> dict:
+    """Return LLM settings from config."""
+    config = read_config()
+    if "llm" not in config:
+        raise ConfigError("llm section not found in configuration file")
+
+    raw = {k: _strip_ini_value(v) for k, v in config["llm"].items()}
+    unset = [param for param in ("base_url", "model") if not raw.get(param)]
+    if unset:
+        raise ConfigError(f"Missing required keys: {', '.join(unset)}")
+
+    if raw.get("context_length"):
+        try:
+            raw["context_length"] = int(raw["context_length"])
+        except ValueError as exc:
+            raise ConfigError("context_length must be an integer") from exc
+    else:
+        raw["context_length"] = DEFAULT_LLM_CONTEXT_LENGTH
+
+    if raw.get("timeout"):
+        try:
+            raw["timeout"] = float(raw["timeout"])
+        except ValueError as exc:
+            raise ConfigError("timeout must be a number") from exc
+    else:
+        raw["timeout"] = float(DEFAULT_LLM_TIMEOUT)
+
+    if raw.get("max_tokens"):
+        try:
+            raw["max_tokens"] = int(raw["max_tokens"])
+        except ValueError as exc:
+            raise ConfigError("max_tokens must be an integer") from exc
+    else:
+        raw["max_tokens"] = DEFAULT_LLM_MAX_TOKENS
+
+    return raw
