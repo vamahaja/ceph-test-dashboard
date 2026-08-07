@@ -10,6 +10,8 @@ from libs.defaults import (
     DEFAULT_HW_MIN_RUNS,
     DEFAULT_HW_RUN_SCAN,
     DEFAULT_NIGHTLY_RUN_USER,
+    DEFAULT_PADDLE_TLS_VERIFY,
+    DEFAULT_PADDLE_TIMEOUT,
 )
 from libs.exceptions import ConfigError
 
@@ -101,11 +103,14 @@ def get_paddle_config() -> dict:
 
     tls_verify = _as_bool(
         paddles.get("tls_verify"),
-        default=True,
+        default=DEFAULT_PADDLE_TLS_VERIFY,
+    )
+    timeout = _as_int(
+        paddles.get("timeout", DEFAULT_PADDLE_TIMEOUT),
     )
     return {
         "base_url": paddles.get("base_url"),
-        "timeout": paddles.get("timeout", 60),
+        "timeout": timeout,
         "tls_verify": tls_verify,
     }
 
