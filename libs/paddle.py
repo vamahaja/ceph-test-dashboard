@@ -1,3 +1,5 @@
+from urllib.parse import quote
+
 import requests
 
 from libs.config import get_paddle_config
@@ -58,17 +60,17 @@ class Paddles:
         """Fetch runs from the Paddles API"""
         url = "/runs/"
         if run_name:
-            url += f"?name={run_name}"
+            url += f"{run_name}"
         if branch:
-            url += f"?branch={branch}"
+            url += f"branch/{branch}/"
         if suite:
-            url += f"?suite={suite}"
+            url += f"suite/{suite}/"
         if status:
-            url += f"?status={status}"
+            url += f"status/{quote(status, safe='')}/"
         if user:
-            url += f"?user={user}"
+            url += f"user/{user}/"
         if job_id and run_name:
-            url += f"jobs/?job_id={job_id}"
+            url += f"jobs/{job_id}/"
         if count and count > 0:
             url += f"?count={count}"
         if page and page > 0 and count > 0:
@@ -91,19 +93,19 @@ class Paddles:
         """Fetch a job from the Paddles API"""
         url = "/jobs/"
         if branch:
-            url += f"?branch={branch}"
+            url += f"branch/{branch}/"
         if suite:
-            url += f"?suite={suite}"
+            url += f"suite/{suite}/"
         if sha1:
-            url += f"?sha1={sha1}"
+            url += f"sha1/{sha1}/"
         if os_type:
-            url += f"?os_type={os_type}"
+            url += f"os_type/{os_type}/"
         if user:
-            url += f"?user={user}"
+            url += f"user/{user}/"
         if machine_type:
-            url += f"?machine_type={machine_type}"
+            url += f"machine_type/{machine_type}/"
         if status:
-            url += f"?status={status}"
+            url += f"status/{quote(status, safe='')}/"
         if count and count > 0:
             url += f"?count={count}"
         if page and page > 0 and count > 0:
@@ -120,7 +122,7 @@ class Paddles:
         """Fetch a node from the Paddles API"""
         url = "/nodes/"
         if machine_type:
-            url += f"?machine_type={machine_type}"
+            url += f"machine_type/{machine_type}/"
         if count and count > 0:
             url += f"?count={count}"
         if page and page > 0 and count > 0:
