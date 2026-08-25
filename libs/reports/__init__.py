@@ -13,13 +13,16 @@ except Exception:
 
 
 from libs.reports.models import (
+    ActiveRunsSummary,
     BranchSummary,
+    ClusterHealthSnapshot,
     DailyStatusPct,
     DailyTrend,
     DimensionStatusTrend,
     FailedRunStat,
     FailedTestRunStat,
     FailureReasonStat,
+    FailingTestStat,
     FlakyTestStat,
     GroupReliabilityStat,
     Job,
@@ -29,13 +32,16 @@ from libs.reports.models import (
     PassRateCell,
     Results,
     ShaSummary,
+    StatusShareTrend,
     SuiteTrend,
     TestRun,
     TestRunsSummary,
 )
 
 __all__ = [
+    "ActiveRunsSummary",
     "BranchSummary",
+    "ClusterHealthSnapshot",
     "DailyStatusPct",
     "DailyTrend",
     "DataSource",
@@ -43,6 +49,7 @@ __all__ = [
     "FailedRunStat",
     "FailedTestRunStat",
     "FailureReasonStat",
+    "FailingTestStat",
     "FlakyTestStat",
     "GroupReliabilityStat",
     "Job",
@@ -52,6 +59,7 @@ __all__ = [
     "PassRateCell",
     "Results",
     "ShaSummary",
+    "StatusShareTrend",
     "SuiteTrend",
     "TestRun",
     "TestRunsSummary",

@@ -2,10 +2,26 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from functools import cached_property
 
+from libs.defaults import (
+    DEFAULT_FLAKY_MIN_EXECUTIONS,
+    DEFAULT_MACHINE_ERROR_PATTERN,
+    DEFAULT_REPORT_COUNT,
+    DEFAULT_TOP_FAILED_RUNS,
+    DEFAULT_TOP_FAILING_TESTS,
+    DEFAULT_TOP_FAILURE_REASONS,
+    DEFAULT_TOP_MACHINE_ERRORS,
+    DEFAULT_TOP_OS_SHARE,
+    DEFAULT_TOP_OS_TRENDS,
+    DEFAULT_TOP_SUITE_SHARE,
+    STATUS_COMPLETED,
+    STATUS_FAILING,
+)
+from libs.exceptions import PaddlesAPIError
 from libs.reports import DataSource
 from libs.reports.models import (
     BranchSummary,
@@ -14,6 +30,7 @@ from libs.reports.models import (
     DimensionStatusTrend,
     FailedRunStat,
     FailureReasonStat,
+    FailingTestStat,
     FlakyTestStat,
     GroupReliabilityStat,
     Job,
@@ -22,19 +39,15 @@ from libs.reports.models import (
     PassRateCell,
     Results,
     ShaSummary,
+    StatusShareTrend,
     SuiteTrend,
+    TestRun,
 )
 from libs.reports.parsing import as_job_list, to_job
 from libs.reports.utils import pct
 
-_COMPLETED = frozenset({"pass", "fail", "dead"})
-_FAILING = frozenset({"fail", "dead"})
+_MACHINE_ERROR_RE = re.compile(DEFAULT_MACHINE_ERROR_PATTERN, re.IGNORECASE)
 
-# Infra / machine-error reasons commonly used on the hardware report.
-_DEFAULT_MACHINE_ERROR_RE = re.compile(
-    r"(ssh|connection|timeout|node|machine|hardware|oom|kernel|reboot|power)",
-    re.IGNORECASE,
-)
 
 def _fill_jobs_summary(jobs: list[Job]) -> JobsSummary:
     summary = JobsSummary(cnt_jobs=len(jobs))
@@ -77,9 +90,46 @@ def _attr_for_dimension(job: Job, dimension: str) -> str:
     }
     return (mapping.get(dimension) or "unknown") or "unknown"
 
+
+def _add_results(into: Results, other: Results) -> None:
+    into.pass_ += other.pass_
+    into.fail += other.fail
+    into.dead += other.dead
+    into.running += other.running
+    into.waiting += other.waiting
+    into.queued += other.queued
+
+
+def _status_share(key: str, results: Results) -> StatusShareTrend:
+    total = results.completed
+    return StatusShareTrend(
+        key=key,
+        results=results,
+        pct_pass=round(pct(results.pass_, total), 1),
+        pct_fail=round(pct(results.fail, total), 1),
+        pct_dead=round(pct(results.dead, total), 1),
+    )
+
+
+def _fold_share_trends(
+    rows: list[tuple[str, Results]],
+    n: int,
+) -> list[StatusShareTrend]:
+    ranked = sorted(rows, key=lambda item: item[1].completed, reverse=True)
+    top = ranked[:n]
+    rest = ranked[n:]
+    out = [_status_share(key, results) for key, results in top]
+    if rest:
+        other = Results()
+        for _, results in rest:
+            _add_results(other, results)
+        out.append(_status_share("other", other))
+    return out
+
+
 @dataclass
 class JobsStats(DataSource):
-    count: int = 100
+    count: int = DEFAULT_REPORT_COUNT
     branch: str = ""
     suite: str = ""
     sha1: str = ""
@@ -139,6 +189,57 @@ class JobsStats(DataSource):
         obj.jobs = list(jobs)
         return obj
 
+    @classmethod
+    def for_testruns(
+        cls,
+        testruns: list[TestRun],
+        *,
+        on_progress: Callable[[int, int], None] | None = None,
+    ) -> JobsStats:
+        """Load jobs for each testrun and fill missing run metadata."""
+        rows = [t for t in testruns if t.name]
+        if not rows:
+            return cls.from_jobs([])
+
+        client = cls.from_jobs([])
+        all_jobs: list[Job] = []
+        total = len(rows)
+        for i, testrun in enumerate(rows, start=1):
+            if on_progress is not None:
+                on_progress(i, total)
+            try:
+                raw = client.jobs_for_run(testrun.name)
+            except PaddlesAPIError:
+                continue
+            for raw_job in as_job_list(raw):
+                job = to_job(raw_job)
+                if not job.branch:
+                    job.branch = testrun.branch
+                if not job.suite:
+                    job.suite = testrun.suite
+                if not job.machine_type:
+                    job.machine_type = testrun.machine_type
+                if not job.run_name:
+                    job.run_name = testrun.name
+                all_jobs.append(job)
+        return cls.from_jobs(all_jobs)
+
+    @classmethod
+    def for_run_names(cls, run_names: list[str]) -> JobsStats:
+        """Load jobs for each run name (no testrun metadata required)."""
+        return cls.for_testruns(
+            [TestRun(name=name) for name in run_names if name]
+        )
+
+    def matching_failure(self, reason: str) -> list[Job]:
+        """Failing jobs whose reason matches ``reason`` (Unknown if empty)."""
+        wanted = reason or "Unknown failure"
+        return [
+            job
+            for job in self.failing_jobs
+            if (job.failure_reason or "Unknown failure") == wanted
+        ]
+
     def filtered(
         self,
         *,
@@ -169,11 +270,11 @@ class JobsStats(DataSource):
 
     @cached_property
     def completed_jobs(self) -> list[Job]:
-        return [j for j in self.jobs if j.status in _COMPLETED]
+        return [j for j in self.jobs if j.status in STATUS_COMPLETED]
 
     @cached_property
     def failing_jobs(self) -> list[Job]:
-        return [j for j in self.jobs if j.status in _FAILING]
+        return [j for j in self.jobs if j.status in STATUS_FAILING]
 
     @cached_property
     def summary(self) -> JobsSummary:
@@ -184,6 +285,47 @@ class JobsStats(DataSource):
     def completed_summary(self) -> JobsSummary:
         """Summary restricted to completed (pass/fail/dead) jobs."""
         return _fill_jobs_summary(self.completed_jobs)
+
+    @cached_property
+    def completed_stats(self) -> JobsStats:
+        """JobsStats restricted to completed (pass/fail/dead) jobs."""
+        return JobsStats.from_jobs(self.completed_jobs)
+
+    def for_branch(self, branch: str) -> JobsStats:
+        """Restrict to jobs on ``branch`` (empty branch returns self)."""
+        if not branch:
+            return self
+        return JobsStats.from_jobs(
+            [job for job in self.jobs if job.branch == branch]
+        )
+
+    def for_run_set(self, testruns: list[TestRun]) -> JobsStats:
+        """Restrict to jobs whose run is in ``testruns``."""
+        names = {testrun.name for testrun in testruns if testrun.name}
+        return JobsStats.from_jobs(
+            [job for job in self.jobs if job.run_name in names]
+        )
+
+    def os_trends(self, n: int = DEFAULT_TOP_OS_TRENDS) -> list[DimensionStatusTrend]:
+        """Top OS types by completed-job volume; fall back to ``unknown``."""
+        rows = self.completed_stats.trends_by_os
+        ranked = [row for row in rows if row.key != "unknown"] or list(rows)
+        ranked.sort(key=lambda row: row.results.completed, reverse=True)
+        return ranked[:n]
+
+    def suite_share_trends(self, n: int = DEFAULT_TOP_SUITE_SHARE) -> list[StatusShareTrend]:
+        """Top suites by completed-job volume, remainder folded into ``other``."""
+        rows = self.completed_stats.trends_by_suite
+        known = [(row.suite, row.results) for row in rows if row.suite != "unknown"]
+        source = known or [(row.suite, row.results) for row in rows]
+        return _fold_share_trends(source, n)
+
+    def os_share_trends(self, n: int = DEFAULT_TOP_OS_SHARE) -> list[StatusShareTrend]:
+        """Top OS types by completed-job volume, remainder folded into ``other``."""
+        rows = self.completed_stats.trends_by_os
+        known = [(row.key, row.results) for row in rows if row.key != "unknown"]
+        source = known or [(row.key, row.results) for row in rows]
+        return _fold_share_trends(source, n)
 
     @cached_property
     def pass_rate(self) -> float:
@@ -200,7 +342,7 @@ class JobsStats(DataSource):
         completed = self.completed_jobs
         if not completed:
             return 0.0
-        failed = sum(1 for j in completed if j.status in _FAILING)
+        failed = sum(1 for j in completed if j.status in STATUS_FAILING)
         return pct(failed, len(completed))
 
     @cached_property
@@ -335,7 +477,7 @@ class JobsStats(DataSource):
         for branch, jobs in by_branch.items():
             cnt_jobs = len(jobs)
             cnt_pass = sum(1 for j in jobs if j.status == "pass")
-            cnt_fail = sum(1 for j in jobs if j.status in _FAILING)
+            cnt_fail = sum(1 for j in jobs if j.status in STATUS_FAILING)
             durations = [j.duration for j in jobs if j.duration]
             run_names = {j.run_name for j in jobs if j.run_name}
             rows.append(
@@ -368,7 +510,7 @@ class JobsStats(DataSource):
         for sha, jobs in by_sha.items():
             cnt_jobs = len(jobs)
             cnt_pass = sum(1 for j in jobs if j.status == "pass")
-            cnt_fail = sum(1 for j in jobs if j.status in _FAILING)
+            cnt_fail = sum(1 for j in jobs if j.status in STATUS_FAILING)
             run_names = {j.run_name for j in jobs if j.run_name}
             rows.append(
                 ShaSummary(
@@ -383,7 +525,7 @@ class JobsStats(DataSource):
             )
         return sorted(rows, key=lambda r: r.pct_pass)
 
-    def top_failure_reasons(self, n: int = 10) -> list[FailureReasonStat]:
+    def top_failure_reasons(self, n: int = DEFAULT_TOP_FAILURE_REASONS) -> list[FailureReasonStat]:
         """Top failure reasons with run/branch/suite/test impact counts."""
         failing = self.failing_jobs
         if not failing:
@@ -424,7 +566,33 @@ class JobsStats(DataSource):
     @cached_property
     def top_10_failure_reasons(self) -> list[FailureReasonStat]:
         """Top 10 failure reasons ranked by occurrence."""
-        return self.top_failure_reasons(10)
+        return self.top_failure_reasons(DEFAULT_TOP_FAILURE_REASONS)
+
+    def top_failing_tests(self, n: int = DEFAULT_TOP_FAILING_TESTS) -> list[FailingTestStat]:
+        """Top failing tests by job description, ranked by occurrence."""
+        failing = self.failing_jobs
+        if not failing:
+            return []
+
+        by_desc: dict[str, list[Job]] = defaultdict(list)
+        for job in failing:
+            by_desc[job.description or "unknown"].append(job)
+
+        total = len(failing)
+        ranked = sorted(
+            by_desc.items(),
+            key=lambda item: len(item[1]),
+            reverse=True,
+        )[:n]
+        return [
+            FailingTestStat(
+                description=description,
+                count=len(jobs),
+                pct=round(pct(len(jobs), total), 1),
+                runs_impacted=len({job.run_name for job in jobs if job.run_name}),
+            )
+            for description, jobs in ranked
+        ]
 
     @cached_property
     def top_failed_runs(self) -> list[FailedRunStat]:
@@ -439,7 +607,7 @@ class JobsStats(DataSource):
         for j in completed:
             run = j.run_name or "unknown"
             totals[run] += 1
-            if j.status in _FAILING:
+            if j.status in STATUS_FAILING:
                 failed[run] += 1
                 suite_for.setdefault(run, j.suite or "")
 
@@ -454,10 +622,9 @@ class JobsStats(DataSource):
             for run, failed_jobs in failed.items()
         ]
         rows.sort(
-            key=lambda r: (r.failed_jobs, r.fail_pct, r.run_name),
-            reverse=True,
+            key=lambda r: (-r.failed_jobs, -r.fail_pct, r.run_name),
         )
-        return rows[:10]
+        return rows[:DEFAULT_TOP_FAILED_RUNS]
 
     def pass_matrix(
         self,
@@ -476,7 +643,7 @@ class JobsStats(DataSource):
         for (rkey, ckey), jobs in buckets.items():
             cnt_jobs = len(jobs)
             cnt_pass = sum(1 for j in jobs if j.status == "pass")
-            cnt_fail = sum(1 for j in jobs if j.status in _FAILING)
+            cnt_fail = sum(1 for j in jobs if j.status in STATUS_FAILING)
             cell = PassRateCell(
                 cnt_jobs=cnt_jobs,
                 cnt_pass=cnt_pass,
@@ -513,7 +680,7 @@ class JobsStats(DataSource):
         for (branch, os_type, machine), jobs in buckets.items():
             cnt_jobs = len(jobs)
             cnt_pass = sum(1 for j in jobs if j.status == "pass")
-            cnt_fail = sum(1 for j in jobs if j.status in _FAILING)
+            cnt_fail = sum(1 for j in jobs if j.status in STATUS_FAILING)
             rows.append(
                 PassRateCell(
                     branch=branch,
@@ -537,7 +704,7 @@ class JobsStats(DataSource):
         for key, jobs in buckets.items():
             cnt_jobs = len(jobs)
             cnt_pass = sum(1 for j in jobs if j.status == "pass")
-            cnt_fail = sum(1 for j in jobs if j.status in _FAILING)
+            cnt_fail = sum(1 for j in jobs if j.status in STATUS_FAILING)
             durations = [j.duration for j in jobs if j.duration]
             rows.append(
                 GroupReliabilityStat(
@@ -572,7 +739,7 @@ class JobsStats(DataSource):
             )
         ]
 
-    def flaky_tests(self, min_executions: int = 3) -> list[FlakyTestStat]:
+    def flaky_tests(self, min_executions: int = DEFAULT_FLAKY_MIN_EXECUTIONS) -> list[FlakyTestStat]:
         """Flakiness scores keyed by job description (coverage report)."""
         by_desc: dict[str, list[Job]] = defaultdict(list)
         for j in self.jobs:
@@ -586,13 +753,13 @@ class JobsStats(DataSource):
                 continue
 
             passed = sum(1 for j in jobs if j.status == "pass")
-            failed = sum(1 for j in jobs if j.status in _FAILING)
+            failed = sum(1 for j in jobs if j.status in STATUS_FAILING)
             total = len(jobs)
 
             unique_failures = len({
                 j.failure_reason
                 for j in jobs
-                if j.status in _FAILING and j.failure_reason
+                if j.status in STATUS_FAILING and j.failure_reason
             })
 
             sha_statuses: dict[str, set[str]] = defaultdict(set)
@@ -601,7 +768,7 @@ class JobsStats(DataSource):
             same_sha_flaky = sum(
                 1
                 for statuses in sha_statuses.values()
-                if ("pass" in statuses) and (statuses & _FAILING)
+                if ("pass" in statuses) and (statuses & STATUS_FAILING)
             )
 
             branch_pass: dict[str, bool] = defaultdict(bool)
@@ -610,7 +777,7 @@ class JobsStats(DataSource):
                 branch = j.branch or "unknown"
                 if j.status == "pass":
                     branch_pass[branch] = True
-                if j.status in _FAILING:
+                if j.status in STATUS_FAILING:
                     branch_fail[branch] = True
             branch_mixed = sum(
                 1
@@ -659,7 +826,7 @@ class JobsStats(DataSource):
         pattern: str | re.Pattern | None = None,
     ) -> list[Job]:
         """Dead jobs matching an infra/hardware failure pattern."""
-        regex = pattern or _DEFAULT_MACHINE_ERROR_RE
+        regex = pattern or _MACHINE_ERROR_RE
         if isinstance(regex, str):
             regex = re.compile(regex, re.IGNORECASE)
         return [
@@ -672,7 +839,7 @@ class JobsStats(DataSource):
 
     def machine_error_reasons(
         self,
-        n: int = 10,
+        n: int = DEFAULT_TOP_MACHINE_ERRORS,
     ) -> list[FailureReasonStat]:
         """Top machine-error failure reasons (hardware report)."""
         errors = JobsStats.from_jobs(self.machine_errors())

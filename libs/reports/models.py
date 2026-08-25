@@ -4,6 +4,13 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any
 
+from libs.defaults import (
+    STATUS_ACTIVE,
+    STATUS_ALERTING,
+    STATUS_COMPLETED,
+    STATUS_FAILING,
+)
+
 
 @dataclass
 class Results:
@@ -83,11 +90,11 @@ class Job:
 
     @property
     def is_completed(self) -> bool:
-        return self.status in ("pass", "fail", "dead")
+        return self.status in STATUS_COMPLETED
 
     @property
     def is_failing(self) -> bool:
-        return self.status in ("fail", "dead")
+        return self.status in STATUS_FAILING
 
 
 @dataclass
@@ -123,15 +130,15 @@ class TestRun:
 
     @property
     def is_completed(self) -> bool:
-        return self.status in ("pass", "fail", "dead")
+        return self.status in STATUS_COMPLETED
 
     @property
     def is_active(self) -> bool:
-        return self.status in ("running", "queued", "waiting")
+        return self.status in STATUS_ACTIVE
 
     @property
     def is_alerting(self) -> bool:
-        return self.status in ("fail", "dead", "queued", "running")
+        return self.status in STATUS_ALERTING
 
 
 @dataclass
@@ -342,3 +349,66 @@ class NightlyRunSummary:
     cnt_completed: int = 0
     cnt_pass: int = 0
     pct_runs_passed: float = 0.0
+
+
+@dataclass
+class ActiveRunsSummary:
+    """Active testrun and in-flight job counts for the overview scorecard."""
+
+    cnt_testruns: int = 0
+    cnt_jobs: int = 0
+    cnt_running: int = 0
+    cnt_waiting: int = 0
+    cnt_queued: int = 0
+    oldest_age: str = "—"
+
+
+@dataclass
+class ClusterHealthSnapshot:
+    """Overview cluster-health card: badge, mix, and supporting context."""
+
+    badge: str = "Unknown"
+    reasons: list[str] = field(default_factory=list)
+    completed: JobsSummary = field(default_factory=JobsSummary)
+    cnt_testruns: int = 0
+    cnt_completed_runs: int = 0
+    cnt_active_runs: int = 0
+    cnt_jobs: int = 0
+    cnt_inflight: int = 0
+    cnt_running: int = 0
+    cnt_waiting: int = 0
+    cnt_queued: int = 0
+    pct_completed: float = 0.0
+    cnt_not_passed: int = 0
+    pct_not_passed: float = 0.0
+    cnt_branches: int = 0
+    cnt_suites: int = 0
+    cnt_machines: int = 0
+    avg_duration: str = "—"
+    top_failure: str = ""
+    top_failure_count: int = 0
+    stuck_6h: int = 0
+    stuck_24h: int = 0
+    worst_branch: str = ""
+    worst_branch_fail_pct: float = 0.0
+
+
+@dataclass
+class StatusShareTrend:
+    """Pass/fail/dead mix as counts and percentages for one group key."""
+
+    key: str = ""
+    results: Results = field(default_factory=Results)
+    pct_pass: float = 0.0
+    pct_fail: float = 0.0
+    pct_dead: float = 0.0
+
+
+@dataclass
+class FailingTestStat:
+    """Top failing test keyed by job description."""
+
+    description: str = ""
+    count: int = 0
+    pct: float = 0.0
+    runs_impacted: int = 0

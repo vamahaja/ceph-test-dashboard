@@ -11,3 +11,6 @@ run_user = jenkins-build
 
 [cache]
 ttl = 3600
+
+[overview]
+refresh_minutes = 60

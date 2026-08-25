@@ -7,11 +7,6 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-_, refresh_col = st.columns([5, 1])
-with refresh_col:
-    if st.button("🔄 Refresh"):
-        st.cache_data.clear()
-
 # Dashboard pages
 overview = st.Page(
     "pages/dashboard/overview.py",

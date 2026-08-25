@@ -40,6 +40,9 @@ See [`openshift/README.md`](openshift/README.md) for the full OpenShift flow (`d
 
     [cache]
     ttl = 3600
+
+    [overview]
+    refresh_minutes = 60
     ```
 
 2. **Build the container image**
