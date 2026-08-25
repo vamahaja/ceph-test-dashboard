@@ -8,39 +8,33 @@ Specialist pages own deep drill-down.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from html import escape
 
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
 import streamlit as st
 
-from libs.config import get_pulpito_url
-from libs.normalizer import get_jobs_data, get_runs_since
-
-_COMPLETED = {"pass", "fail", "dead"}
-_ACTIVE = {"queued", "running"}
-
-_COLOR_MAP = {
-    "pass": "#54b399",
-    "fail": "#d36086",
-    "dead": "#aa6556",
-    "running": "#6092c0",
-    "queued": "#d6bf57",
-}
-
-_STATUS_ROW_COLORS = {
-    "pass": "background-color: #54b399; color: white",
-    "fail": "background-color: #d36086; color: white",
-    "dead": "background-color: #aa6556; color: white",
-    "running": "background-color: #6092c0; color: white",
-    "queued": "background-color: #d6bf57; color: white",
-    "unknown": "background-color: #9170b8; color: white",
-}
-
-
-def _row_color(row):
-    style = _STATUS_ROW_COLORS.get(row.get("status", ""), "")
-    return [style] * len(row)
+from libs.config import get_overview_refresh_minutes
+from libs.defaults import (
+    DEFAULT_HEALTH_STUCK_HOURS,
+    DEFAULT_HEALTH_STUCK_HOURS_LONG,
+    DEFAULT_TOP_ACTIVE_TESTRUNS,
+    STATUS_COLOR_MAP,
+    status_rgba,
+    status_row_styles,
+)
+from libs.exceptions import ConfigError, PaddlesAPIError
+from libs.pulpito import base_url, run_link_column, run_url
+from libs.reports.jobs import JobsStats
+from libs.reports.models import (
+    ClusterHealthSnapshot,
+    Job,
+    JobsSummary,
+    StatusShareTrend,
+    TestRun,
+)
+from libs.reports.testruns import TestRunsStats
+from libs.reports.utils import as_utc
 
 _WINDOW_OPTIONS = {
     "Last 24 hours": timedelta(hours=24),
@@ -48,56 +42,356 @@ _WINDOW_OPTIONS = {
     "Last 30 days": timedelta(days=30),
 }
 
+_ACTIVE_TABLE_CAP = DEFAULT_TOP_ACTIVE_TESTRUNS
 
-# ── helpers ───────────────────────────────────────────────────────────
+_BADGE_STATUS = {
+    "Healthy": "pass",
+    "Degraded": "queued",
+    "Critical": "fail",
+    "Unknown": "unknown",
+}
 
-def _health_badge(pass_rate: float, dead_rate: float) -> tuple[str, str]:
-    """
-    Return (label, caption) from pass rate and dead rate.
 
-    Critical: pass < 50% or dead >= 15%
-    Degraded: pass < 80% or dead >= 5%
-    Healthy: otherwise
-    """
-    if pass_rate < 50 or dead_rate >= 15:
+def _mix_bar_html(completed: JobsSummary) -> str:
+    total = completed.cnt_jobs
+    if not total:
         return (
-            "Critical",
-            "Pass rate under 50% or dead rate at/above 15%.",
+            '<div style="height:10px;border-radius:999px;'
+            'background:rgba(148,163,184,0.22)"></div>'
         )
-    if pass_rate < 80 or dead_rate >= 5:
-        return (
-            "Degraded",
-            "Pass rate under 80% or dead rate at/above 5%.",
+    parts: list[str] = []
+    for status, count in (
+        ("pass", completed.cnt_pass),
+        ("fail", completed.cnt_fail),
+        ("dead", completed.cnt_dead),
+    ):
+        if count <= 0:
+            continue
+        width = 100.0 * count / total
+        parts.append(
+            f'<div style="width:{width:.3f}%;height:10px;'
+            f'background:{status_rgba(status, 0.9)}"></div>'
         )
     return (
-        "Healthy",
-        "Pass rate at/above 80% and dead rate under 5%.",
+        '<div style="display:flex;width:100%;border-radius:999px;'
+        'overflow:hidden;background:rgba(148,163,184,0.18)">'
+        + "".join(parts)
+        + "</div>"
     )
 
 
-def _format_age(posted, now: datetime) -> str:
-    if pd.isna(posted):
-        return "—"
-    ts = posted.to_pydatetime() if hasattr(posted, "to_pydatetime") else posted
-    if ts.tzinfo is None:
-        ts = ts.replace(tzinfo=timezone.utc)
-    ref = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
-    seconds = max(0, (ref - ts).total_seconds())
-    if seconds < 3600:
-        return f"{int(seconds // 60)}m"
-    if seconds < 86400:
-        return f"{seconds / 3600:.1f}h"
-    return f"{seconds / 86400:.1f}d"
+def _outcome_cell_html(status: str, label: str, pct: float, count: int) -> str:
+    return (
+        f'<div style="flex:1;min-width:6.5rem">'
+        f'<div style="font-size:0.72rem;letter-spacing:0.08em;text-transform:uppercase;'
+        f'opacity:0.72">'
+        f'<span style="display:inline-block;width:0.55rem;height:0.55rem;'
+        f'border-radius:999px;background:{status_rgba(status, 0.95)};'
+        f'margin-right:0.4rem;vertical-align:middle"></span>{escape(label)}</div>'
+        f'<div style="font-size:1.55rem;font-weight:650;line-height:1.15;'
+        f'margin-top:0.2rem">{pct:.1f}%</div>'
+        f'<div style="font-size:0.8rem;opacity:0.68;margin-top:0.1rem">'
+        f"{count:,} jobs</div></div>"
+    )
 
 
-# ── page header ───────────────────────────────────────────────────────
+def _kpi_html(value: int | str, label: str, hint: str = "") -> str:
+    hint_html = (
+        f'<div style="font-size:0.75rem;opacity:0.62;margin-top:0.12rem">'
+        f"{escape(hint)}</div>"
+        if hint
+        else ""
+    )
+    display = value if isinstance(value, str) else f"{value:,}"
+    return (
+        f'<div style="min-width:6.5rem">'
+        f'<div style="font-size:1.2rem;font-weight:650">{escape(display)}</div>'
+        f'<div style="font-size:0.72rem;letter-spacing:0.07em;text-transform:uppercase;'
+        f'opacity:0.68;margin-top:0.15rem">{escape(label)}</div>{hint_html}</div>'
+    )
+
+
+def _chip_html(label: str, value: str) -> str:
+    return (
+        f'<span style="display:inline-block;padding:0.2rem 0.55rem;'
+        f"border-radius:999px;background:rgba(148,163,184,0.14);"
+        f'font-size:0.78rem;margin:0.15rem 0.3rem 0.15rem 0">'
+        f'<span style="opacity:0.68">{escape(label)}</span> '
+        f"<strong>{escape(value)}</strong></span>"
+    )
+
+
+def _show_cluster_health(
+    *,
+    window_label: str,
+    health: ClusterHealthSnapshot,
+) -> None:
+    accent = _BADGE_STATUS.get(health.badge, "unknown")
+    completed = health.completed
+    reasons = "".join(
+        f'<li style="margin:0.15rem 0">{escape(reason)}</li>'
+        for reason in health.reasons
+    )
+    chips: list[str] = [
+        _chip_html("Branches", str(health.cnt_branches)),
+        _chip_html("Suites", str(health.cnt_suites)),
+        _chip_html("Machines", str(health.cnt_machines)),
+    ]
+    if health.top_failure:
+        chips.append(
+            _chip_html(
+                "Top failure",
+                f"{health.top_failure} · {health.top_failure_count} jobs",
+            )
+        )
+    if health.worst_branch:
+        chips.append(
+            _chip_html(
+                "Worst branch",
+                f"{health.worst_branch} · {health.worst_branch_fail_pct:.1f}% fail",
+            )
+        )
+    html = "".join(
+        [
+            f'<div style="border:1px solid {status_rgba(accent, 0.28)};'
+            f"border-left:6px solid {status_rgba(accent, 0.95)};"
+            f"background:{status_rgba(accent, 0.08)};"
+            'border-radius:12px;padding:1.1rem 1.25rem 1.2rem;width:100%">',
+            '<div style="font-size:0.72rem;letter-spacing:0.12em;'
+            'text-transform:uppercase;opacity:0.7;font-weight:600">',
+            f"Cluster health · {escape(window_label)}</div>",
+            '<div style="display:flex;flex-wrap:wrap;gap:1.5rem;'
+            'align-items:stretch;margin-top:0.85rem">',
+            '<div style="flex:0 1 260px">',
+            f'<div style="font-size:2rem;font-weight:700;letter-spacing:0.04em;'
+            f'line-height:1.1;color:{status_rgba(accent, 1)}">',
+            f"{escape(health.badge)}</div>",
+            '<ul style="margin:0.55rem 0 0;padding-left:1.15rem;'
+            f'font-size:0.88rem;opacity:0.82;line-height:1.45">{reasons}</ul></div>',
+            '<div style="flex:1 1 360px;min-width:16rem">',
+            '<div style="display:flex;flex-wrap:wrap;gap:0.75rem 1.25rem">',
+            _outcome_cell_html(
+                "pass", "Passed", completed.pct_pass, completed.cnt_pass
+            ),
+            _outcome_cell_html(
+                "fail", "Failed", completed.pct_fail, completed.cnt_fail
+            ),
+            _outcome_cell_html(
+                "dead", "Dead", completed.pct_dead, completed.cnt_dead
+            ),
+            "</div>",
+            f'<div style="margin-top:0.85rem">{_mix_bar_html(completed)}</div>',
+            '<div style="margin-top:0.35rem;font-size:0.78rem;opacity:0.65">',
+            f"Among {completed.cnt_jobs:,} completed jobs · "
+            f"{health.cnt_not_passed:,} not passed "
+            f"({health.pct_not_passed:.1f}% fail+dead).</div></div></div>",
+            '<div style="display:flex;flex-wrap:wrap;gap:1.1rem 1.6rem;'
+            "margin-top:1.05rem;padding-top:0.9rem;"
+            f'border-top:1px solid {status_rgba(accent, 0.18)}">',
+            _kpi_html(
+                health.cnt_testruns,
+                "Testruns",
+                f"{health.cnt_completed_runs:,} done · {health.cnt_active_runs:,} active",
+            ),
+            _kpi_html(
+                health.cnt_jobs,
+                "Jobs",
+                f"{health.pct_completed:.0f}% completed",
+            ),
+            _kpi_html(completed.cnt_jobs, "Completed"),
+            _kpi_html(
+                health.cnt_inflight,
+                "In flight",
+                (
+                    f"{health.cnt_running:,} run · {health.cnt_waiting:,} wait · "
+                    f"{health.cnt_queued:,} queued"
+                ),
+            ),
+            _kpi_html(health.avg_duration, "Avg duration"),
+            _kpi_html(
+                health.stuck_6h,
+                f"Stuck >{DEFAULT_HEALTH_STUCK_HOURS}h",
+                (
+                    f"{health.stuck_24h:,} older than "
+                    f"{DEFAULT_HEALTH_STUCK_HOURS_LONG}h"
+                ),
+            ),
+            "</div>",
+            '<div style="margin-top:0.85rem">',
+            "".join(chips),
+            "</div></div>",
+        ]
+    )
+    st.html(html)
+
+
+def _active_runs_frame(runs: list[TestRun], pulpito: str | None) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "name": run_url(run.name, base=pulpito),
+                "status": run.status,
+                "branch": run.branch,
+                "suite": run.suite,
+                "machine_type": run.machine_type,
+                "user": run.user,
+                "total_jobs": run.total_jobs,
+                "posted": run.posted,
+            }
+            for run in runs
+        ]
+    )
+
+
+def _show_active_table(runs: list[TestRun], pulpito: str | None) -> None:
+    table = _active_runs_frame(runs, pulpito)
+    st.dataframe(
+        table.style.apply(status_row_styles, axis=1),
+        column_config=run_link_column("name", "Run", base=pulpito),
+        width="stretch",
+        hide_index=True,
+        height=min(420, 38 + max(len(table), 1) * 35),
+    )
+
+
+def _share_bar(trends: list[StatusShareTrend], *, title: str, x_title: str) -> None:
+    rows: list[dict] = []
+    order: list[str] = []
+    for row in trends:
+        order.append(row.key)
+        for status in ("pass", "fail", "dead"):
+            count = getattr(row.results, "pass_" if status == "pass" else status)
+            if not count:
+                continue
+            percentage = getattr(row, f"pct_{status}")
+            rows.append(
+                {
+                    "group": row.key,
+                    "status": status,
+                    "count": count,
+                    "percentage": percentage,
+                    "label": f"{percentage:.1f}%",
+                }
+            )
+    if not rows:
+        st.info(f"No {x_title.lower()} information available for completed jobs.")
+        return
+
+    fig = px.bar(
+        pd.DataFrame(rows),
+        x="group",
+        y="percentage",
+        color="status",
+        color_discrete_map=STATUS_COLOR_MAP,
+        barmode="stack",
+        text="label",
+        title=title,
+        labels={"group": x_title, "percentage": "Share (%)", "count": "Jobs"},
+        hover_data={"count": True, "percentage": True, "label": False},
+        category_orders={"status": ["pass", "fail", "dead"], "group": order},
+    )
+    fig.update_layout(height=400, legend_title_text="Status", yaxis_range=[0, 100])
+    fig.update_traces(textposition="inside", cliponaxis=False)
+    st.plotly_chart(fig, width="stretch")
+
+
+def _overview_refresh_every() -> timedelta:
+    """Incremental patch interval from config (``[overview] refresh_minutes``)."""
+    return timedelta(minutes=get_overview_refresh_minutes())
+
+
+@st.cache_resource
+def _overview_store() -> dict:
+    """Process-wide overview payload; patched with recent runs/jobs on an interval."""
+    return {
+        "runs": [],
+        "jobs": [],
+        "loaded_at": None,
+        "patched_at": None,
+    }
+
+
+def _merge_overview_runs(
+    existing: list[TestRun],
+    incoming: list[TestRun],
+    *,
+    keep_since: datetime,
+) -> list[TestRun]:
+    by_name = {run.name: run for run in existing if run.name}
+    for run in incoming:
+        if run.name:
+            by_name[run.name] = run
+    keep_utc = as_utc(keep_since)
+    rows = []
+    for run in by_name.values():
+        posted = as_utc(run.posted)
+        if posted is None or keep_utc is None or posted >= keep_utc:
+            rows.append(run)
+    rows.sort(key=lambda run: as_utc(run.posted) or keep_utc, reverse=True)
+    return rows
+
+
+def _merge_overview_jobs(existing: list[Job], incoming: list[Job]) -> list[Job]:
+    refreshed = {job.run_name for job in incoming if job.run_name}
+    kept = [job for job in existing if job.run_name not in refreshed]
+    return kept + list(incoming)
+
+
+def _ensure_overview_payload() -> tuple[list[TestRun], list[Job]]:
+    """Full 30-day load once, then merge recent runs/jobs when the interval elapses."""
+    store = _overview_store()
+    now = datetime.now(timezone.utc)
+    refresh_minutes = get_overview_refresh_minutes()
+    refresh_every = timedelta(minutes=refresh_minutes)
+    keep_since = now - max(_WINDOW_OPTIONS.values())
+
+    if store["loaded_at"] is None:
+        with st.spinner("Loading overview data…"):
+            runs = TestRunsStats.since(keep_since)
+            jobs = JobsStats.for_testruns(runs.testruns)
+        store["runs"] = runs.testruns
+        store["jobs"] = jobs.jobs
+        store["loaded_at"] = now
+        store["patched_at"] = now
+        return store["runs"], store["jobs"]
+
+    patched_at = store["patched_at"] or store["loaded_at"]
+    if now - patched_at >= refresh_every:
+        patch_since = now - refresh_every
+        with st.spinner(
+            f"Refreshing last {refresh_minutes} minutes of overview data…"
+        ):
+            recent_runs = TestRunsStats.since(patch_since)
+            recent_jobs = JobsStats.for_testruns(recent_runs.testruns)
+        store["runs"] = _merge_overview_runs(
+            store["runs"],
+            recent_runs.testruns,
+            keep_since=keep_since,
+        )
+        store["jobs"] = _merge_overview_jobs(store["jobs"], recent_jobs.jobs)
+        store["patched_at"] = now
+
+    return store["runs"], store["jobs"]
+
+
+@st.fragment(run_every=_overview_refresh_every())
+def _periodic_overview_refresh() -> None:
+    """Rerun the page when the configured interval elapses so the patch can apply."""
+    store = _overview_store()
+    patched_at = store["patched_at"]
+    if patched_at is None:
+        return
+    now = datetime.now(timezone.utc)
+    if now - patched_at >= _overview_refresh_every():
+        st.rerun()
+
 
 st.markdown(
     "<h1 style='text-align: center;'>Ceph Test Dashboard</h1>",
     unsafe_allow_html=True,
 )
 st.markdown(
-    "High-level **lab health**, **active runs**, and **job trends by OS**. "
+    "High-level **lab health**, **active runs**, and **job trends**. "
     "Use Nightly, Hardware, and Coverage for deep drill-down."
 )
 
@@ -106,403 +400,329 @@ window_label = st.sidebar.selectbox(
     "Time window",
     list(_WINDOW_OPTIONS.keys()),
     index=1,  # Last 7 days
+    key="overview_window",
 )
-window_delta = _WINDOW_OPTIONS[window_label]
 now = datetime.now(timezone.utc)
-cutoff = now - window_delta
+cutoff = now - _WINDOW_OPTIONS[window_label]
 
-# ── data load ─────────────────────────────────────────────────────────
+try:
+    payload_runs, payload_jobs = _ensure_overview_payload()
+except (PaddlesAPIError, ConfigError) as exc:
+    st.warning(f"Could not load overview data: {exc}")
+    st.stop()
 
-# Floor to the minute so Streamlit cache keys stay stable within a TTL window.
-runs_data = get_runs_since(cutoff.replace(second=0, microsecond=0).isoformat())
-if not runs_data:
+_periodic_overview_refresh()
+
+all_runs = TestRunsStats.from_testruns(payload_runs).posted_since(cutoff)
+all_jobs = JobsStats.from_jobs(payload_jobs).for_run_set(all_runs.testruns)
+
+if not all_runs.testruns:
     st.warning(f"No runs found in the selected window ({window_label}).")
     st.stop()
 
-df_runs = pd.DataFrame(runs_data)
-df_runs["posted"] = pd.to_datetime(df_runs["posted"], errors="coerce", utc=True)
-window_runs = df_runs[df_runs["posted"] >= cutoff].copy()
-if window_runs.empty:
-    st.warning(f"No runs found in the selected window ({window_label}).")
-    st.stop()
-
-window_runs = window_runs.sort_values("posted", ascending=False)
-run_names = window_runs["name"].dropna().unique().tolist()
-run_info = window_runs.set_index("name")[
-    [c for c in ["branch", "suite", "cloud_platform"] if c in window_runs.columns]
-].to_dict("index")
-
-all_jobs: list[dict] = []
-progress = st.progress(0, text="Loading job data…")
-for i, run_name in enumerate(run_names):
-    progress.progress(
-        int((i + 1) / max(len(run_names), 1) * 100),
-        text=f"Loading jobs for run {i + 1} of {len(run_names)}…",
-    )
-    run_jobs = get_jobs_data(run_name=run_name)
-    if not run_jobs:
-        continue
-    info = run_info.get(run_name, {})
-    for raw_job in run_jobs:
-        # Copy so we never mutate objects owned by @st.cache_data.
-        job = dict(raw_job)
-        if not job.get("branch"):
-            job["branch"] = info.get("branch", "")
-        if not job.get("suite"):
-            job["suite"] = info.get("suite", "")
-        if not job.get("machine_type"):
-            job["machine_type"] = info.get("cloud_platform", "")
-        if not job.get("run_name"):
-            job["run_name"] = run_name
-        all_jobs.append(job)
-progress.empty()
-
-if not all_jobs:
+if not all_jobs.jobs:
     st.warning("No job data available for runs in the selected window.")
     st.stop()
 
-df_jobs = pd.DataFrame(all_jobs)
-df_jobs["posted"] = pd.to_datetime(df_jobs["posted"], errors="coerce", utc=True)
-df_jobs["branch"] = df_jobs["branch"].fillna("unknown").replace("", "unknown")
-df_jobs["suite"] = df_jobs["suite"].fillna("unknown").replace("", "unknown")
-df_jobs["machine_type"] = (
-    df_jobs["machine_type"].fillna("unknown").replace("", "unknown")
+branches = sorted({run.branch for run in all_runs.testruns if run.branch})
+branch_label = st.sidebar.selectbox(
+    "Branch",
+    ["All"] + branches,
+    key="overview_branch",
 )
-if "os_type" not in df_jobs.columns:
-    df_jobs["os_type"] = "unknown"
-else:
-    df_jobs["os_type"] = (
-        df_jobs["os_type"].fillna("").replace("", "unknown")
-    )
-if "failure_template" not in df_jobs.columns:
-    df_jobs["failure_template"] = ""
-else:
-    df_jobs["failure_template"] = df_jobs["failure_template"].fillna("")
+branch = "" if branch_label == "All" else branch_label
+runs = all_runs.for_branch(branch)
+jobs = all_jobs.for_branch(branch)
 
-# Prefer job posted time inside window; keep jobs whose run is in window even
-# if job posted is slightly outside (Paddles timing quirks).
-df_jobs = df_jobs[df_jobs["run_name"].isin(run_names)].copy()
+if not runs.testruns:
+    st.warning(f"No runs found for branch `{branch_label}`.")
+    st.stop()
 
-if "description" not in df_jobs.columns:
-    df_jobs["description"] = ""
-else:
-    df_jobs["description"] = df_jobs["description"].fillna("")
+if not jobs.jobs:
+    st.warning(f"No job data available for branch `{branch_label}`.")
+    st.stop()
 
-completed = df_jobs[df_jobs["status"].isin(_COMPLETED)].copy()
-active_jobs = df_jobs[df_jobs["status"].isin(_ACTIVE)].copy()
+pulpito = base_url()
+health = runs.cluster_health(jobs, now=now)
 
-# ── 2. Cluster health scorecard ───────────────────────────────────────
-
-n_runs = len(run_names)
-n_completed = len(completed)
-n_pass = int((completed["status"] == "pass").sum()) if n_completed else 0
-n_fail = int((completed["status"] == "fail").sum()) if n_completed else 0
-n_dead = int((completed["status"] == "dead").sum()) if n_completed else 0
-n_active_jobs = len(active_jobs)
-pass_rate = round(n_pass / n_completed * 100, 1) if n_completed else 0.0
-dead_rate = round(n_dead / n_completed * 100, 1) if n_completed else 0.0
-badge, badge_caption = _health_badge(pass_rate, dead_rate)
-
-st.subheader(f"Cluster Health — {window_label}")
-st.caption(
-    f"Health: **{badge}** — {badge_caption} "
-    f"Metrics use all **{n_runs}** runs in this window."
-)
-
-c1, c2, c3, c4, c5, c6 = st.columns(6)
-c1.metric("Runs", n_runs)
-c2.metric("Completed Jobs", n_completed)
-c3.metric("Pass Rate", f"{pass_rate}%")
-c4.metric("Failed", n_fail)
-c5.metric("Dead", n_dead)
-c6.metric("Active Jobs", n_active_jobs)
+_show_cluster_health(window_label=window_label, health=health)
 
 st.divider()
 
-# ── 3. Active runs ────────────────────────────────────────────────────
+st.subheader("Daily trend")
+
+daily_rows: list[dict] = []
+for trend in jobs.completed_stats.daily_trends:
+    for status in ("pass", "fail", "dead"):
+        count = getattr(trend.results, "pass_" if status == "pass" else status)
+        if not count:
+            continue
+        daily_rows.append({"day": trend.day, "status": status, "count": count})
+
+pct_rows: list[dict] = []
+for row in jobs.completed_stats.daily_status_pct(dead_as_fail=False):
+    for status in ("pass", "fail", "dead"):
+        pct_rows.append(
+            {
+                "day": row.day,
+                "status": status,
+                "percentage": round(getattr(row, f"pct_{status}"), 1),
+            }
+        )
+
+if not daily_rows:
+    st.info("No completed jobs to chart.")
+else:
+    col_count, col_pct = st.columns(2)
+    with col_count:
+        fig_trend = px.line(
+            pd.DataFrame(daily_rows),
+            x="day",
+            y="count",
+            color="status",
+            color_discrete_map=STATUS_COLOR_MAP,
+            markers=True,
+            title="Completed Jobs by Day",
+            labels={"day": "Day", "count": "Jobs"},
+            category_orders={"status": ["pass", "fail", "dead"]},
+        )
+        fig_trend.update_layout(height=360, legend_title_text="Status")
+        st.plotly_chart(fig_trend, width="stretch")
+    with col_pct:
+        fig_pct = px.line(
+            pd.DataFrame(pct_rows),
+            x="day",
+            y="percentage",
+            color="status",
+            color_discrete_map=STATUS_COLOR_MAP,
+            markers=True,
+            title="Pass / Fail / Dead Rate by Day",
+            labels={"day": "Day", "percentage": "Share (%)"},
+            category_orders={"status": ["pass", "fail", "dead"]},
+        )
+        fig_pct.update_layout(
+            height=360,
+            legend_title_text="Status",
+            yaxis_range=[0, 100],
+        )
+        st.plotly_chart(fig_pct, width="stretch")
+
+st.divider()
 
 st.subheader("Active Runs")
 
-active_runs = window_runs[window_runs["status"].isin(_ACTIVE)].copy()
-n_queued_runs = int((active_runs["status"] == "queued").sum()) if not active_runs.empty else 0
-n_running_runs = int((active_runs["status"] == "running").sum()) if not active_runs.empty else 0
+active = runs.active_summary(now)
+r1, r2, r3, r4, r5, r6 = st.columns(6)
+r1.metric("Active Testruns", active.cnt_testruns)
+r2.metric("Total Active Jobs", active.cnt_jobs)
+r3.metric("Running", active.cnt_running)
+r4.metric("Waiting", active.cnt_waiting)
+r5.metric("Queued", active.cnt_queued)
+r6.metric("Oldest Active Age", active.oldest_age)
 
-oldest_age = "—"
-if not active_runs.empty and active_runs["posted"].notna().any():
-    oldest_age = _format_age(active_runs["posted"].min(), now)
+stuck_6h = len(
+    runs.stuck_testruns(
+        older_than=timedelta(hours=DEFAULT_HEALTH_STUCK_HOURS),
+        now=now,
+    )
+)
+stuck_24h = len(
+    runs.stuck_testruns(
+        older_than=timedelta(hours=DEFAULT_HEALTH_STUCK_HOURS_LONG),
+        now=now,
+    )
+)
+st.caption(
+    f"**{stuck_6h}** active runs older than {DEFAULT_HEALTH_STUCK_HOURS}h · "
+    f"**{stuck_24h}** older than {DEFAULT_HEALTH_STUCK_HOURS_LONG}h."
+)
 
-r1, r2, r3, r4 = st.columns(4)
-r1.metric("Active Runs", len(active_runs))
-r2.metric("Queued", n_queued_runs)
-r3.metric("Running", n_running_runs)
-r4.metric("Oldest Active Age", oldest_age)
-
-if active_runs.empty:
-    st.info("No queued or running runs in the selected window.")
+ranked_active = runs.ranked_active_testruns()
+if not ranked_active:
+    st.info("No queued, running, or waiting runs in the selected window.")
 else:
-    status_order = {"queued": 0, "running": 1}
-    runs_display = active_runs.copy()
-    runs_display["_sort"] = runs_display["status"].map(status_order).fillna(9)
-    runs_display = runs_display.sort_values(
-        ["_sort", "posted"], ascending=[True, True]
-    )
-    # Normalizer stores machine type as cloud_platform on runs.
-    if "cloud_platform" in runs_display.columns:
-        runs_display["machine_type"] = runs_display["cloud_platform"]
-
-    column_config: dict = {}
-    pulpito_base = get_pulpito_url()
-    if pulpito_base:
-        pulpito_base = pulpito_base.rstrip("/")
-        runs_display["name"] = runs_display["name"].apply(
-            lambda n: f"{pulpito_base}/{n}/"
-        )
-        column_config["name"] = st.column_config.LinkColumn(
-            label="Run",
-            display_text=r"([^/]+)/$",
-        )
-
-    cols = [
-        c for c in [
-            "name", "status", "branch", "suite", "machine_type",
-            "user", "total_jobs", "posted",
-        ]
-        if c in runs_display.columns
-    ]
-    runs_table = runs_display[cols].reset_index(drop=True)
-    st.dataframe(
-        runs_table.style.apply(_row_color, axis=1),
-        column_config=column_config,
-        width="stretch",
-        hide_index=True,
-        height=min(420, 38 + len(runs_table) * 35),
-    )
+    shown = ranked_active[:_ACTIVE_TABLE_CAP]
+    rest = ranked_active[_ACTIVE_TABLE_CAP:]
+    _show_active_table(shown, pulpito)
+    if rest:
+        with st.expander(f"All other active runs ({len(rest)})"):
+            _show_active_table(rest, pulpito)
 
 st.divider()
 
-# ── 4. Top failures ───────────────────────────────────────────────────
+st.subheader("Needs attention")
 
-st.subheader("Top Failures")
-failing = completed[completed["status"].isin(["fail", "dead"])].copy()
-if failing.empty:
-    st.info("No failures in this window.")
-else:
-    failing["failure_reason"] = (
-        failing["failure_template"]
-        .fillna("")
-        .replace("", "Unknown failure")
-    )
-    total_failing_jobs = len(failing)
-    col_reasons, col_runs = st.columns(2)
+col_reasons, col_runs = st.columns(2)
 
-    with col_reasons:
-        st.markdown("**Top 10 Failure Reasons**")
-        top_fail = (
-            failing.groupby("failure_reason")["job_id"]
-            .count()
-            .reset_index(name="jobs")
-            .sort_values("jobs", ascending=False)
-            .head(10)
+with col_reasons:
+    st.markdown("**Top failure reasons**")
+    if not jobs.top_10_failure_reasons:
+        st.info("No failures in this window.")
+    else:
+        top_fail = pd.DataFrame(
+            [
+                {
+                    "Failure Reason": row.reason,
+                    "Jobs": row.count,
+                    "Share (%)": row.pct,
+                    "Runs": row.runs_impacted,
+                }
+                for row in jobs.top_10_failure_reasons
+            ]
         )
-        top_fail["share"] = (top_fail["jobs"] / total_failing_jobs * 100).round(1)
-        st.dataframe(
-            top_fail.rename(columns={
-                "failure_reason": "Failure Reason",
-                "jobs": "Jobs",
-                "share": "Share (%)",
-            }),
+        event = st.dataframe(
+            top_fail,
             width="stretch",
             hide_index=True,
             height=min(400, 38 + len(top_fail) * 35),
+            on_select="rerun",
+            selection_mode="single-row",
+            key="overview_failure_reasons",
         )
+        selected_rows = event.selection.rows if event.selection else []
+        if selected_rows:
+            selected_reason = str(
+                top_fail.iloc[selected_rows[0]]["Failure Reason"]
+            )
+            matching = jobs.matching_failure(selected_reason)
+            run_names = list(
+                dict.fromkeys(job.run_name for job in matching if job.run_name)
+            )
+            records = runs.records_for_names(run_names)
+            jobs_count = len(matching)
+            runs_count = len(run_names)
+            btn_jobs, btn_runs = st.columns(2)
+            with btn_jobs:
+                if st.button(f"View {jobs_count} Impacted Jobs →"):
+                    st.session_state["drill_run_names"] = run_names
+                    st.switch_page(
+                        "pages/dashboard/jobs.py",
+                        query_params={
+                            "failure_reason": selected_reason,
+                            "source": "overview",
+                        },
+                    )
+            with btn_runs:
+                if st.button(f"View {runs_count} Impacted Runs →"):
+                    st.session_state["drill_run_names"] = run_names
+                    st.session_state["drill_run_records"] = records
+                    st.switch_page(
+                        "pages/dashboard/testruns.py",
+                        query_params={
+                            "failure_reason": selected_reason,
+                            "source": "overview",
+                        },
+                    )
 
-    with col_runs:
-        st.markdown("**Top 10 Failure Runs**")
-        run_totals = (
-            completed.groupby("run_name")["job_id"]
-            .count()
-            .rename("total_jobs")
+with col_runs:
+    st.markdown("**Worst failed runs**")
+    if not jobs.top_failed_runs:
+        st.info("No failed runs in this window.")
+    else:
+        display_runs = pd.DataFrame(
+            [
+                {
+                    "Run": run_url(row.run_name, base=pulpito),
+                    "Suite": row.suite,
+                    "Failed Jobs": row.failed_jobs,
+                    "Fail Rate (%)": row.fail_pct,
+                }
+                for row in jobs.top_failed_runs
+            ]
         )
-        top_runs = (
-            failing.groupby("run_name")
-            .agg(
-                failed_jobs=("job_id", "count"),
-                suite=("suite", "first"),
-            )
-            .join(run_totals, how="left")
-            .reset_index()
-        )
-        top_runs["fail_rate"] = (
-            top_runs["failed_jobs"] / top_runs["total_jobs"].replace(0, pd.NA) * 100
-        ).round(1)
-        top_runs = top_runs.sort_values(
-            ["failed_jobs", "fail_rate", "run_name"],
-            ascending=[False, False, True],
-        ).head(10)
-
-        display_runs = top_runs[
-            ["run_name", "suite", "failed_jobs", "fail_rate"]
-        ].rename(columns={
-            "run_name": "Run",
-            "suite": "Suite",
-            "failed_jobs": "Failed Jobs",
-            "fail_rate": "Fail Rate (%)",
-        }).copy()
-
-        runs_col_config: dict = {}
-        pulpito_base = get_pulpito_url()
-        if pulpito_base:
-            pulpito_base = pulpito_base.rstrip("/")
-            display_runs["Run"] = display_runs["Run"].apply(
-                lambda n: f"{pulpito_base}/{n}/"
-            )
-            runs_col_config["Run"] = st.column_config.LinkColumn(
-                label="Run",
-                display_text=r"([^/]+)/$",
-            )
-
         st.dataframe(
             display_runs,
-            column_config=runs_col_config,
+            column_config=run_link_column("Run", "Run", base=pulpito),
             width="stretch",
             hide_index=True,
             height=min(400, 38 + len(display_runs) * 35),
         )
 
+col_tests, col_branches = st.columns(2)
+
+with col_tests:
+    st.markdown("**Top failing tests**")
+    failing_tests = jobs.top_failing_tests()
+    if not failing_tests:
+        st.info("No failing tests in this window.")
+    else:
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "Test": row.description,
+                        "Jobs": row.count,
+                        "Share (%)": row.pct,
+                        "Runs": row.runs_impacted,
+                    }
+                    for row in failing_tests
+                ]
+            ),
+            width="stretch",
+            hide_index=True,
+            height=min(400, 38 + len(failing_tests) * 35),
+        )
+
+with col_branches:
+    st.markdown("**Worst branches**")
+    worst_branches = jobs.branch_summaries[:8]
+    if not worst_branches:
+        st.info("No completed-job branch data in this window.")
+    else:
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "Branch": row.branch,
+                        "Jobs": row.cnt_jobs,
+                        "Fail (%)": row.pct_fail,
+                        "Pass (%)": row.pct_pass,
+                    }
+                    for row in worst_branches
+                ]
+            ),
+            width="stretch",
+            hide_index=True,
+            height=min(400, 38 + len(worst_branches) * 35),
+        )
+
+st.markdown("**Machine type reliability**")
+machines = [
+    row for row in jobs.reliability_by("machine_type") if row.key != "unknown"
+][:8]
+if not machines:
+    st.info("No machine type information available for completed jobs.")
+else:
+    st.dataframe(
+        pd.DataFrame(
+            [
+                {
+                    "Machine": row.key,
+                    "Jobs": row.cnt_jobs,
+                    "Fail (%)": row.pct_fail,
+                    "Pass (%)": row.pct_pass,
+                }
+                for row in machines
+            ]
+        ),
+        width="stretch",
+        hide_index=True,
+        height=min(320, 38 + len(machines) * 35),
+    )
+
 st.divider()
 
-# ── 5. Trends (charts at bottom) ──────────────────────────────────────
-
-st.subheader("Trends")
-
-trend = completed.dropna(subset=["posted"]).copy()
-if trend.empty:
-    st.info("No completed jobs to chart.")
-else:
-    trend["day"] = trend["posted"].dt.floor("D")
-    daily = (
-        trend.groupby(["day", "status"])
-        .size()
-        .reset_index(name="count")
-    )
-    fig_trend = px.line(
-        daily,
-        x="day",
-        y="count",
-        color="status",
-        color_discrete_map=_COLOR_MAP,
-        markers=True,
-        title="Completed Jobs by Day",
-        labels={"day": "Day", "count": "Jobs"},
-        category_orders={"status": ["pass", "fail", "dead"]},
-    )
-    fig_trend.update_layout(height=400, legend_title_text="Status")
-    st.plotly_chart(fig_trend, width="stretch")
-
-st.markdown("**Job Trends by OS Type**")
-os_jobs = completed[completed["os_type"] != "unknown"].copy()
-if os_jobs.empty:
-    # Fall back to all completed rows so the chart still renders.
-    os_jobs = completed.copy()
-if os_jobs.empty:
-    st.info("No OS type information available for completed jobs.")
-else:
-    os_list = sorted(os_jobs["os_type"].unique().tolist())
-    # One row: top 3 OS types by volume.
-    if len(os_list) > 3:
-        os_list = (
-            os_jobs.groupby("os_type")
-            .size()
-            .sort_values(ascending=False)
-            .head(3)
-            .index
-            .tolist()
-        )
-    pie_cols = st.columns(len(os_list))
-    for idx, os_name in enumerate(os_list):
-        status_counts = (
-            os_jobs[os_jobs["os_type"] == os_name]["status"]
-            .value_counts()
-            .reindex(["pass", "fail", "dead"])
-            .dropna()
-            .reset_index()
-        )
-        status_counts.columns = ["status", "count"]
-        colors = [_COLOR_MAP.get(s, "#999") for s in status_counts["status"]]
-        fig_os = go.Figure(
-            go.Pie(
-                labels=status_counts["status"].str.capitalize(),
-                values=status_counts["count"],
-                marker=dict(colors=colors),
-                hole=0.4,
-                textinfo="percent+label",
-                textposition="inside",
-                hovertemplate=(
-                    "%{label}<br>Jobs=%{value}<br>Share=%{percent}<extra></extra>"
-                ),
-            )
-        )
-        fig_os.update_layout(
-            title=dict(text=os_name, x=0.5),
-            height=300,
-            margin=dict(l=10, r=10, t=40, b=10),
-            showlegend=False,
-        )
-        with pie_cols[idx]:
-            st.plotly_chart(fig_os, width="stretch")
-
-# Suite trend lives with charts, not in the Top Failures tables.
-suite_jobs = completed[completed["suite"] != "unknown"].copy()
-if suite_jobs.empty:
-    suite_jobs = completed.copy()
-if suite_jobs.empty:
-    st.info("No suite information available for completed jobs.")
-else:
-    suite_counts = (
-        suite_jobs.groupby(["suite", "status"])
-        .size()
-        .reset_index(name="count")
-    )
-    # Keep the chart readable: top suites by volume, then remaining as "other".
-    suite_order = (
-        suite_counts.groupby("suite")["count"]
-        .sum()
-        .sort_values(ascending=False)
-    )
-    top_suite_names = suite_order.head(12).index.tolist()
-    suite_plot = suite_counts.copy()
-    suite_plot.loc[~suite_plot["suite"].isin(top_suite_names), "suite"] = "other"
-    suite_plot = (
-        suite_plot.groupby(["suite", "status"], as_index=False)["count"]
-        .sum()
-    )
-    suite_totals = suite_plot.groupby("suite")["count"].transform("sum")
-    suite_plot["percentage"] = (
-        suite_plot["count"] / suite_totals.replace(0, pd.NA) * 100
-    ).round(1)
-    suite_plot["label"] = suite_plot["percentage"].map(lambda v: f"{v:.1f}%")
-    fig_suite = px.bar(
-        suite_plot,
-        x="suite",
-        y="percentage",
-        color="status",
-        color_discrete_map=_COLOR_MAP,
-        barmode="stack",
-        text="label",
-        title="Job Trends by Suite (%)",
-        labels={"suite": "Suite", "percentage": "Share (%)", "count": "Jobs"},
-        hover_data={"count": True, "percentage": True, "label": False},
-        category_orders={
-            "status": ["pass", "fail", "dead"],
-            "suite": top_suite_names + (
-                ["other"] if (suite_plot["suite"] == "other").any() else []
-            ),
-        },
-    )
-    fig_suite.update_layout(
-        height=400,
-        legend_title_text="Status",
-        yaxis_range=[0, 100],
-    )
-    fig_suite.update_traces(textposition="inside", cliponaxis=False)
-    st.plotly_chart(fig_suite, width="stretch")
+st.subheader("Job mix")
+col_os, col_suite = st.columns(2)
+with col_os:
+    os_trends = jobs.os_share_trends()
+    if not os_trends:
+        st.info("No OS type information available for completed jobs.")
+    else:
+        _share_bar(os_trends, title="Job Trends by OS (%)", x_title="OS")
+with col_suite:
+    suite_trends = jobs.suite_share_trends()
+    if not suite_trends:
+        st.info("No suite information available for completed jobs.")
+    else:
+        _share_bar(suite_trends, title="Job Trends by Suite (%)", x_title="Suite")

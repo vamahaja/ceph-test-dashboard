@@ -2,12 +2,23 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from functools import cached_property
+from typing import TYPE_CHECKING
 
+from libs.defaults import (
+    DEFAULT_HEALTH_STUCK_HOURS,
+    DEFAULT_HEALTH_STUCK_HOURS_LONG,
+    DEFAULT_REPORT_COUNT,
+    DEFAULT_RUN_MAX_PAGES,
+    DEFAULT_RUN_PAGE_SIZE,
+    DEFAULT_TOP_ACTIVE_TESTRUNS,
+)
 from libs.reports import DataSource
 from libs.reports.models import (
+    ActiveRunsSummary,
     BranchSummary,
+    ClusterHealthSnapshot,
     DailyTrend,
     FailedTestRunStat,
     NightlyRunSummary,
@@ -17,8 +28,20 @@ from libs.reports.models import (
     TestRun,
     TestRunsSummary,
 )
-from libs.reports.parsing import as_run_list, to_failed_stat, to_testrun
-from libs.reports.utils import as_date, parse_iso_date, pct
+from libs.reports.parsing import as_run_list, as_run_record, to_failed_stat, to_testrun
+from libs.reports.utils import (
+    as_date,
+    as_utc,
+    format_age,
+    format_duration,
+    health_assessment,
+    parse_iso_date,
+    pct,
+)
+
+if TYPE_CHECKING:
+    from libs.reports.jobs import JobsStats
+
 
 def _filter_testruns_by_date(
     rows: list[TestRun],
@@ -44,7 +67,7 @@ def _filter_testruns_by_date(
 
 @dataclass
 class TestRunsStats(DataSource):
-    count: int = 100
+    count: int = DEFAULT_REPORT_COUNT
     branch: str = ""
     suite: str = ""
     testrun_name: str = ""
@@ -92,6 +115,60 @@ class TestRunsStats(DataSource):
         obj.testruns = list(testruns)
         return obj
 
+    @classmethod
+    def since(
+        cls,
+        cutoff: datetime,
+        *,
+        page_size: int = DEFAULT_RUN_PAGE_SIZE,
+        max_pages: int = DEFAULT_RUN_MAX_PAGES,
+    ) -> TestRunsStats:
+        """Page newest-first runs whose ``posted`` time is at or after ``cutoff``."""
+        client = cls.from_testruns([])
+        cutoff_utc = as_utc(cutoff)
+        if cutoff_utc is None:
+            return client
+
+        collected: list[TestRun] = []
+        page = 1
+        while page <= max_pages:
+            raw = client.run(count=page_size, page=page)
+            items = as_run_list(raw)
+            if not items:
+                break
+
+            reached_before_cutoff = False
+            for item in items:
+                testrun = to_testrun(item)
+                posted = as_utc(testrun.posted)
+                if posted is None:
+                    continue
+                if posted < cutoff_utc:
+                    reached_before_cutoff = True
+                    continue
+                collected.append(testrun)
+
+            if reached_before_cutoff or len(items) < page_size:
+                break
+            page += 1
+
+        collected.sort(
+            key=lambda t: as_utc(t.posted) or cutoff_utc,
+            reverse=True,
+        )
+        return cls.from_testruns(collected)
+
+    @classmethod
+    def from_records(cls, records: list[dict]) -> TestRunsStats:
+        """Build stats from raw run dicts (nightly/builds drill-in)."""
+        return cls.from_testruns(
+            [to_testrun(raw) for raw in records if isinstance(raw, dict)]
+        )
+
+    @property
+    def distinct_status_count(self) -> int:
+        return len({t.status for t in self.testruns if t.status})
+
     @cached_property
     def testrun(self) -> TestRun | None:
         """Return the first (or only) testrun, if any."""
@@ -110,6 +187,144 @@ class TestRunsStats(DataSource):
     def active_testruns(self) -> list[TestRun]:
         """Testruns that are still running, queued, or waiting."""
         return [t for t in self.testruns if t.is_active]
+
+    def ranked_active_testruns(self) -> list[TestRun]:
+        """Active testruns oldest-first (missing ``posted`` sorts last)."""
+        aware_max = datetime.max.replace(tzinfo=timezone.utc)
+        return sorted(
+            self.active_testruns,
+            key=lambda t: as_utc(t.posted) or aware_max,
+        )
+
+    def oldest_active_testruns(self, n: int = DEFAULT_TOP_ACTIVE_TESTRUNS) -> list[TestRun]:
+        """Oldest ``n`` active testruns."""
+        return self.ranked_active_testruns()[:n]
+
+    def stuck_testruns(
+        self,
+        *,
+        older_than: timedelta,
+        now: datetime | None = None,
+    ) -> list[TestRun]:
+        """Active testruns whose ``posted`` time is at least ``older_than`` ago."""
+        ref = as_utc(now) or datetime.now(timezone.utc)
+        cutoff = ref - older_than
+        stuck: list[TestRun] = []
+        for testrun in self.active_testruns:
+            posted = as_utc(testrun.posted)
+            if posted is not None and posted <= cutoff:
+                stuck.append(testrun)
+        return stuck
+
+    def for_branch(self, branch: str) -> TestRunsStats:
+        """Restrict to testruns on ``branch`` (empty branch returns self)."""
+        if not branch:
+            return self
+        return TestRunsStats.from_testruns(self.filtered(branch=branch))
+
+    def posted_since(self, cutoff: datetime) -> TestRunsStats:
+        """Keep testruns whose ``posted`` time is at or after ``cutoff``."""
+        cutoff_utc = as_utc(cutoff)
+        if cutoff_utc is None:
+            return self
+        rows = []
+        for testrun in self.testruns:
+            posted = as_utc(testrun.posted)
+            if posted is not None and posted >= cutoff_utc:
+                rows.append(testrun)
+        return TestRunsStats.from_testruns(rows)
+
+    def records_for_names(self, names: list[str]) -> list[dict]:
+        """Serialize matching testruns for jobs/testruns drill-in."""
+        wanted = set(names)
+        return [
+            as_run_record(testrun)
+            for testrun in self.testruns
+            if testrun.name in wanted
+        ]
+
+    def cluster_health(
+        self,
+        jobs: JobsStats,
+        *,
+        now: datetime | None = None,
+    ) -> ClusterHealthSnapshot:
+        """Badge, completed mix, and supporting context for the overview card."""
+        all_jobs = jobs.summary
+        completed = jobs.completed_summary
+        inflight = all_jobs.cnt_running + all_jobs.cnt_waiting + all_jobs.cnt_queued
+        if completed.cnt_jobs:
+            badge, reasons = health_assessment(
+                round(completed.pct_pass, 1),
+                round(completed.pct_dead, 1),
+            )
+        else:
+            badge, reasons = "Unknown", ["No completed jobs in this window."]
+
+        top = jobs.top_10_failure_reasons[:1]
+        worst = next((row for row in jobs.branch_summaries if row.pct_fail), None)
+        machines = {
+            job.machine_type for job in jobs.jobs if job.machine_type
+        }
+        return ClusterHealthSnapshot(
+            badge=badge,
+            reasons=reasons,
+            completed=completed,
+            cnt_testruns=len(self.testruns),
+            cnt_completed_runs=len(self.completed_testruns),
+            cnt_active_runs=len(self.active_testruns),
+            cnt_jobs=all_jobs.cnt_jobs,
+            cnt_inflight=inflight,
+            cnt_running=all_jobs.cnt_running,
+            cnt_waiting=all_jobs.cnt_waiting,
+            cnt_queued=all_jobs.cnt_queued,
+            pct_completed=round(pct(completed.cnt_jobs, all_jobs.cnt_jobs), 1),
+            cnt_not_passed=completed.cnt_fail + completed.cnt_dead,
+            pct_not_passed=round(
+                pct(completed.cnt_fail + completed.cnt_dead, completed.cnt_jobs),
+                1,
+            ),
+            cnt_branches=len({run.branch for run in self.testruns if run.branch}),
+            cnt_suites=len({run.suite for run in self.testruns if run.suite}),
+            cnt_machines=len(machines),
+            avg_duration=format_duration(jobs.completed_stats.avg_duration),
+            top_failure=top[0].reason if top else "",
+            top_failure_count=top[0].count if top else 0,
+            stuck_6h=len(
+                self.stuck_testruns(
+                    older_than=timedelta(hours=DEFAULT_HEALTH_STUCK_HOURS),
+                    now=now,
+                )
+            ),
+            stuck_24h=len(
+                self.stuck_testruns(
+                    older_than=timedelta(hours=DEFAULT_HEALTH_STUCK_HOURS_LONG),
+                    now=now,
+                )
+            ),
+            worst_branch=worst.branch if worst else "",
+            worst_branch_fail_pct=worst.pct_fail if worst else 0.0,
+        )
+
+    def active_summary(
+        self,
+        now: datetime | None = None,
+    ) -> ActiveRunsSummary:
+        """Active testruns plus running/waiting/queued job counts."""
+        active = self.active_testruns
+        cnt_running = sum(t.results.running for t in active)
+        cnt_waiting = sum(t.results.waiting for t in active)
+        cnt_queued = sum(t.results.queued for t in active)
+        posted_times = [as_utc(t.posted) for t in active if t.posted]
+        oldest = min(posted_times) if posted_times else None
+        return ActiveRunsSummary(
+            cnt_testruns=len(active),
+            cnt_jobs=cnt_running + cnt_waiting + cnt_queued,
+            cnt_running=cnt_running,
+            cnt_waiting=cnt_waiting,
+            cnt_queued=cnt_queued,
+            oldest_age=format_age(oldest, now),
+        )
 
     @cached_property
     def alerting_testruns(self) -> list[TestRun]:

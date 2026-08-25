@@ -27,7 +27,7 @@ If cert-manager is not available, or you prefer the default OpenShift router cer
 |------|---------|
 | [deploy.sh](deploy.sh) | Orchestrates namespace, optional TLS, ConfigMap, Deployment, Service, Route |
 | [dashboard.config.tmpl](dashboard.config.tmpl) | Configuration template (copy to `dashboard.config`, do not commit) |
-| [configmap.yaml](configmap.yaml) | Dashboard INI (`paddles`, `pulpito`, `nightly`, `cache`, `hardware`) |
+| [configmap.yaml](configmap.yaml) | Dashboard INI (`paddles`, `pulpito`, `nightly`, `cache`, `overview`, `hardware`) |
 | [deployment.yaml](deployment.yaml) | Streamlit app Deployment |
 | [service.yaml](service.yaml) | ClusterIP Service on port 8501 |
 | [route.yaml](route.yaml) | Edge Route (used with `--skip-cert`) |

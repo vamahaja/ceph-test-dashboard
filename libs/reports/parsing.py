@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from libs.defaults import DEFAULT_FAILURE_REASON_MAX_LEN
 from libs.reports.models import FailedTestRunStat, Job, Results, TestRun
 from libs.reports.utils import to_datetime
 
@@ -64,6 +65,31 @@ def as_run_list(raw) -> list[dict]:
     return []
 
 
+def as_run_record(testrun: TestRun) -> dict:
+    """Serialize a testrun for drill-in session state / ``from_records``."""
+    return {
+        "name": testrun.name,
+        "branch": testrun.branch,
+        "suite": testrun.suite,
+        "sha_id": testrun.sha_id,
+        "machine_type": testrun.machine_type,
+        "status": testrun.status,
+        "user": testrun.user,
+        "scheduled": testrun.scheduled.isoformat() if testrun.scheduled else "",
+        "posted": testrun.posted.isoformat() if testrun.posted else "",
+        "started": testrun.started.isoformat() if testrun.started else "",
+        "updated": testrun.updated.isoformat() if testrun.updated else "",
+        "results": {
+            "pass": testrun.results.pass_,
+            "fail": testrun.results.fail,
+            "dead": testrun.results.dead,
+            "running": testrun.results.running,
+            "waiting": testrun.results.waiting,
+            "queued": testrun.results.queued,
+        },
+    }
+
+
 def to_failed_stat(testrun: TestRun) -> FailedTestRunStat:
     return FailedTestRunStat(
         name=testrun.name,
@@ -102,8 +128,9 @@ def to_job(raw: dict) -> Job:
         or raw.get("failure_template")
         or ""
     )
-    if failure_reason and len(str(failure_reason)) > 80:
-        failure_reason = str(failure_reason)[:77] + "..."
+    if failure_reason and len(str(failure_reason)) > DEFAULT_FAILURE_REASON_MAX_LEN:
+        keep = max(DEFAULT_FAILURE_REASON_MAX_LEN - 3, 0)
+        failure_reason = str(failure_reason)[:keep] + "..."
 
     return Job(
         job_id=_to_job_id(raw.get("job_id")),

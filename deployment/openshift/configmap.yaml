@@ -21,6 +21,9 @@ data:
     [cache]
     ttl = ${CACHE_TTL}
 
+    [overview]
+    refresh_minutes = 60
+
     [hardware]
     run_scan = 200
     max_runs = 30

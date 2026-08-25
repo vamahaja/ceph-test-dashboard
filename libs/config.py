@@ -10,6 +10,7 @@ from libs.defaults import (
     DEFAULT_HW_MIN_RUNS,
     DEFAULT_HW_RUN_SCAN,
     DEFAULT_NIGHTLY_RUN_USER,
+    DEFAULT_OVERVIEW_REFRESH_MINUTES,
     DEFAULT_PADDLE_TLS_VERIFY,
     DEFAULT_PADDLE_TIMEOUT,
 )
@@ -120,6 +121,20 @@ def get_cache_ttl() -> int:
     return _as_int(
         read_config().get("cache", {}).get("ttl", DEFAULT_CACHE_TTL)
     )
+
+
+def get_overview_refresh_minutes() -> int:
+    """Return Overview incremental refresh interval in minutes from config."""
+    minutes = _as_int(
+        read_config().get("overview", {}).get(
+            "refresh_minutes", DEFAULT_OVERVIEW_REFRESH_MINUTES
+        )
+    )
+    if minutes < 1:
+        raise ConfigError(
+            f"overview.refresh_minutes must be >= 1, got {minutes}"
+        )
+    return minutes
 
 
 def get_nightly_run_user() -> str:
