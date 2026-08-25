@@ -94,4 +94,4 @@ See [`deployment/README.md`](deployment/README.md) for full Podman deployment in
 
 ## Architecture
 
-The normalizer layer (`libs/normalizer.py`) fetches data from the Paddles API and normalises records into a consistent schema used by all dashboard pages.
+Overview, Test Runs, Jobs, Releases, Nightly, Builds, Coverage, and Hardware load Paddles data through `libs/reports` (`TestRunsStats` / `JobsStats` / `HardwareStats`).

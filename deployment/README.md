@@ -40,9 +40,11 @@ See [`openshift/README.md`](openshift/README.md) for the full OpenShift flow (`d
 
     [cache]
     ttl = 3600
-
-    [overview]
+    # Report snapshots are shared across sessions for this many minutes.
     refresh_minutes = 60
+
+    [release]
+    branches = tentacle, squid, umbrella
     ```
 
 2. **Build the container image**

@@ -20,9 +20,10 @@ data:
 
     [cache]
     ttl = ${CACHE_TTL}
-
-    [overview]
     refresh_minutes = 60
+
+    [release]
+    branches = tentacle, squid, umbrella
 
     [hardware]
     run_scan = 200

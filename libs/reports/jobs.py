@@ -3,13 +3,14 @@ from __future__ import annotations
 import re
 from collections import defaultdict
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from functools import cached_property
 
 from libs.defaults import (
     DEFAULT_FLAKY_MIN_EXECUTIONS,
-    DEFAULT_MACHINE_ERROR_PATTERN,
+    DEFAULT_JOB_FETCH_WORKERS,
     DEFAULT_REPORT_COUNT,
     DEFAULT_TOP_FAILED_RUNS,
     DEFAULT_TOP_FAILING_TESTS,
@@ -44,9 +45,7 @@ from libs.reports.models import (
     TestRun,
 )
 from libs.reports.parsing import as_job_list, to_job
-from libs.reports.utils import pct
-
-_MACHINE_ERROR_RE = re.compile(DEFAULT_MACHINE_ERROR_PATTERN, re.IGNORECASE)
+from libs.reports.utils import pct, sha_matches
 
 
 def _fill_jobs_summary(jobs: list[Job]) -> JobsSummary:
@@ -195,6 +194,7 @@ class JobsStats(DataSource):
         testruns: list[TestRun],
         *,
         on_progress: Callable[[int, int], None] | None = None,
+        workers: int = DEFAULT_JOB_FETCH_WORKERS,
     ) -> JobsStats:
         """Load jobs for each testrun and fill missing run metadata."""
         rows = [t for t in testruns if t.name]
@@ -202,15 +202,13 @@ class JobsStats(DataSource):
             return cls.from_jobs([])
 
         client = cls.from_jobs([])
-        all_jobs: list[Job] = []
-        total = len(rows)
-        for i, testrun in enumerate(rows, start=1):
-            if on_progress is not None:
-                on_progress(i, total)
+
+        def _jobs_for_run(testrun: TestRun) -> list[Job]:
             try:
                 raw = client.jobs_for_run(testrun.name)
             except PaddlesAPIError:
-                continue
+                return []
+            jobs: list[Job] = []
             for raw_job in as_job_list(raw):
                 job = to_job(raw_job)
                 if not job.branch:
@@ -221,7 +219,22 @@ class JobsStats(DataSource):
                     job.machine_type = testrun.machine_type
                 if not job.run_name:
                     job.run_name = testrun.name
-                all_jobs.append(job)
+                if not job.sha1:
+                    job.sha1 = testrun.sha_id
+                jobs.append(job)
+            return jobs
+
+        all_jobs: list[Job] = []
+        total = len(rows)
+        pool_size = max(1, min(workers, total))
+        with ThreadPoolExecutor(max_workers=pool_size) as pool:
+            futures = {pool.submit(_jobs_for_run, testrun): testrun for testrun in rows}
+            done = 0
+            for future in as_completed(futures):
+                all_jobs.extend(future.result())
+                done += 1
+                if on_progress is not None:
+                    on_progress(done, total)
         return cls.from_jobs(all_jobs)
 
     @classmethod
@@ -299,11 +312,40 @@ class JobsStats(DataSource):
             [job for job in self.jobs if job.branch == branch]
         )
 
+    def for_suite(self, suite: str) -> JobsStats:
+        """Restrict to jobs in ``suite`` (empty suite returns self)."""
+        if not suite:
+            return self
+        return JobsStats.from_jobs(
+            [job for job in self.jobs if job.suite == suite]
+        )
+
+    def for_machine_type(self, machine_type: str) -> JobsStats:
+        """Restrict to jobs on ``machine_type`` (case-insensitive)."""
+        wanted = (machine_type or "").strip().lower()
+        if not wanted:
+            return self
+        return JobsStats.from_jobs(
+            [
+                job
+                for job in self.jobs
+                if (job.machine_type or "").strip().lower() == wanted
+            ]
+        )
+
     def for_run_set(self, testruns: list[TestRun]) -> JobsStats:
         """Restrict to jobs whose run is in ``testruns``."""
         names = {testrun.name for testrun in testruns if testrun.name}
         return JobsStats.from_jobs(
             [job for job in self.jobs if job.run_name in names]
+        )
+
+    def for_sha(self, sha: str) -> JobsStats:
+        """Restrict to jobs whose SHA matches ``sha`` (prefix-safe)."""
+        if not sha:
+            return self
+        return JobsStats.from_jobs(
+            [job for job in self.jobs if sha_matches(job.sha1, sha)]
         )
 
     def os_trends(self, n: int = DEFAULT_TOP_OS_TRENDS) -> list[DimensionStatusTrend]:
@@ -525,8 +567,13 @@ class JobsStats(DataSource):
             )
         return sorted(rows, key=lambda r: r.pct_pass)
 
-    def top_failure_reasons(self, n: int = DEFAULT_TOP_FAILURE_REASONS) -> list[FailureReasonStat]:
-        """Top failure reasons with run/branch/suite/test impact counts."""
+    def top_failure_reasons(
+        self, n: int | None = DEFAULT_TOP_FAILURE_REASONS
+    ) -> list[FailureReasonStat]:
+        """Top failure reasons with run/branch/suite/test impact counts.
+
+        Pass ``n=None`` to return every reason (coverage failure table).
+        """
         failing = self.failing_jobs
         if not failing:
             return []
@@ -539,9 +586,14 @@ class JobsStats(DataSource):
         total_failing = len(failing)
         ranked = sorted(
             by_reason.items(),
-            key=lambda item: len(item[1]),
-            reverse=True,
-        )[:n]
+            key=lambda item: (
+                -len(item[1]),
+                -len({j.branch for j in item[1] if j.branch}),
+                item[0],
+            ),
+        )
+        if n is not None:
+            ranked = ranked[:n]
         return [
             FailureReasonStat(
                 reason=reason,
@@ -825,16 +877,16 @@ class JobsStats(DataSource):
         self,
         pattern: str | re.Pattern | None = None,
     ) -> list[Job]:
-        """Dead jobs matching an infra/hardware failure pattern."""
-        regex = pattern or _MACHINE_ERROR_RE
+        """Lab/infrastructure failures (dead jobs and matching fail reasons)."""
+        from libs.reports.hardware import MACHINE_ERROR_RE, is_machine_error
+
+        regex = pattern or MACHINE_ERROR_RE
         if isinstance(regex, str):
             regex = re.compile(regex, re.IGNORECASE)
         return [
-            j
-            for j in self.jobs
-            if j.status == "dead"
-            and j.failure_reason
-            and regex.search(j.failure_reason)
+            job
+            for job in self.jobs
+            if is_machine_error(job.status, job.failure_reason, pattern=regex)
         ]
 
     def machine_error_reasons(

@@ -11,6 +11,8 @@ run_user = jenkins-build
 
 [cache]
 ttl = 3600
-
-[overview]
+# Report snapshots are shared across sessions for this many minutes.
 refresh_minutes = 60
+
+[release]
+branches = tentacle, squid, umbrella

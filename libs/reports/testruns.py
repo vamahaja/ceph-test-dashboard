@@ -37,6 +37,7 @@ from libs.reports.utils import (
     health_assessment,
     parse_iso_date,
     pct,
+    sha_matches,
 )
 
 if TYPE_CHECKING:
@@ -120,19 +121,35 @@ class TestRunsStats(DataSource):
         cls,
         cutoff: datetime,
         *,
+        branch: str = "",
+        user: str = "",
+        suite: str = "",
+        until: datetime | None = None,
         page_size: int = DEFAULT_RUN_PAGE_SIZE,
         max_pages: int = DEFAULT_RUN_MAX_PAGES,
     ) -> TestRunsStats:
-        """Page newest-first runs whose ``posted`` time is at or after ``cutoff``."""
+        """Page newest-first runs whose ``posted`` time is at or after ``cutoff``.
+
+        Optional ``branch`` / ``user`` / ``suite`` are passed to the API. Optional
+        ``until`` is an exclusive upper bound (runs at or after ``until``
+        are skipped).
+        """
         client = cls.from_testruns([])
         cutoff_utc = as_utc(cutoff)
+        until_utc = as_utc(until)
         if cutoff_utc is None:
             return client
 
         collected: list[TestRun] = []
         page = 1
         while page <= max_pages:
-            raw = client.run(count=page_size, page=page)
+            raw = client.run(
+                count=page_size,
+                page=page,
+                branch=branch or None,
+                user=user or None,
+                suite=suite or None,
+            )
             items = as_run_list(raw)
             if not items:
                 break
@@ -142,6 +159,8 @@ class TestRunsStats(DataSource):
                 testrun = to_testrun(item)
                 posted = as_utc(testrun.posted)
                 if posted is None:
+                    continue
+                if until_utc is not None and posted >= until_utc:
                     continue
                 if posted < cutoff_utc:
                     reached_before_cutoff = True
@@ -156,6 +175,79 @@ class TestRunsStats(DataSource):
             key=lambda t: as_utc(t.posted) or cutoff_utc,
             reverse=True,
         )
+        return cls.from_testruns(collected)
+
+    @classmethod
+    def posted_between(
+        cls,
+        date_start: date,
+        date_end: date,
+        *,
+        branch: str = "",
+        page_size: int = DEFAULT_RUN_PAGE_SIZE,
+        max_pages: int = DEFAULT_RUN_MAX_PAGES,
+    ) -> TestRunsStats:
+        """Page runs whose ``posted`` calendar day is in ``[date_start, date_end]``."""
+        start = datetime(
+            date_start.year, date_start.month, date_start.day, tzinfo=timezone.utc
+        )
+        until = datetime(
+            date_end.year, date_end.month, date_end.day, tzinfo=timezone.utc
+        ) + timedelta(days=1)
+        return cls.since(
+            start,
+            branch=branch,
+            until=until,
+            page_size=page_size,
+            max_pages=max_pages,
+        )
+
+    @classmethod
+    def for_scheduled_window(
+        cls,
+        date_start: date,
+        date_end: date,
+        *,
+        user: str = "",
+        page_size: int = DEFAULT_RUN_PAGE_SIZE,
+        max_pages: int = DEFAULT_RUN_MAX_PAGES,
+    ) -> TestRunsStats:
+        """Page runs whose scheduled (else posted) day is in ``[date_start, date_end]``.
+
+        Optional ``user`` is passed to the API (nightly owner filter).
+        """
+        client = cls.from_testruns([])
+        collected: list[TestRun] = []
+        page = 1
+        while page <= max_pages:
+            raw = client.run(
+                user=user or None,
+                date_start=date_start.isoformat(),
+                date_end=date_end.isoformat(),
+                count=page_size,
+                page=page,
+            )
+            items = as_run_list(raw)
+            if not items:
+                break
+            collected.extend(to_testrun(item) for item in items)
+            if len(items) < page_size:
+                break
+            page += 1
+
+        collected = _filter_testruns_by_date(
+            collected,
+            date_start=date_start,
+            date_end=date_end,
+        )
+        if user:
+            collected = [
+                run
+                for run in collected
+                if run.user == user and run.scheduled is not None
+            ]
+        else:
+            collected = [run for run in collected if run.scheduled is not None]
         return cls.from_testruns(collected)
 
     @classmethod
@@ -221,6 +313,53 @@ class TestRunsStats(DataSource):
         if not branch:
             return self
         return TestRunsStats.from_testruns(self.filtered(branch=branch))
+
+    def for_suites(self, suites: list[str] | tuple[str, ...] | set[str]) -> TestRunsStats:
+        """Restrict to testruns whose suite is in ``suites``."""
+        wanted = {suite for suite in suites if suite}
+        if not wanted:
+            return TestRunsStats.from_testruns([])
+        return TestRunsStats.from_testruns(
+            [run for run in self.testruns if run.suite in wanted]
+        )
+
+    def for_suite(self, suite: str) -> TestRunsStats:
+        """Restrict to testruns in ``suite`` (empty suite returns self)."""
+        if not suite:
+            return self
+        return self.for_suites([suite])
+
+    def for_branches(
+        self, branches: list[str] | tuple[str, ...] | set[str]
+    ) -> TestRunsStats:
+        """Restrict to testruns whose branch is in ``branches``."""
+        wanted = {branch for branch in branches if branch}
+        if not wanted:
+            return TestRunsStats.from_testruns([])
+        return TestRunsStats.from_testruns(
+            [run for run in self.testruns if run.branch in wanted]
+        )
+
+    def for_machine_type(self, machine_type: str) -> TestRunsStats:
+        """Restrict to testruns on ``machine_type`` (case-insensitive)."""
+        wanted = (machine_type or "").strip().lower()
+        if not wanted:
+            return self
+        return TestRunsStats.from_testruns(
+            [
+                run
+                for run in self.testruns
+                if (run.machine_type or "").strip().lower() == wanted
+            ]
+        )
+
+    def for_sha(self, sha: str) -> TestRunsStats:
+        """Restrict to testruns whose SHA matches ``sha`` (prefix-safe)."""
+        if not sha:
+            return self
+        return TestRunsStats.from_testruns(
+            [run for run in self.testruns if sha_matches(run.sha_id, sha)]
+        )
 
     def posted_since(self, cutoff: datetime) -> TestRunsStats:
         """Keep testruns whose ``posted`` time is at or after ``cutoff``."""
