@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 import pandas as pd
 import streamlit as st
 
-from libs.config import get_cache_ttl
+from libs.config import get_refresh_seconds
 from libs.defaults import DEFAULT_REPORT_COUNT, status_row_styles
 from libs.exceptions import ConfigError, PaddlesAPIError
 from libs.pulpito import base_url, run_link_column, run_url
@@ -39,7 +39,7 @@ def _query_str(key: str) -> str:
     return str(value or "")
 
 
-@st.cache_data(ttl=get_cache_ttl(), show_spinner=False)
+@st.cache_data(ttl=get_refresh_seconds(), show_spinner=False)
 def _load_latest_runs() -> TestRunsStats:
     return TestRunsStats(count=DEFAULT_REPORT_COUNT)
 
@@ -101,7 +101,7 @@ def _show_runs_scorecard(stats: TestRunsStats) -> None:
 
 
 def _clear_failure_drill() -> None:
-    """Drop failure drill-in state used by Overview / Nightly / Builds."""
+    """Drop failure drill-in state used by Overview / Releases / Nightly / Builds."""
     st.session_state.pop("drill_run_names", None)
     st.session_state.pop("drill_run_records", None)
     st.query_params.clear()
@@ -119,7 +119,7 @@ failure_filter = _query_str("failure_reason")
 source_filter = _query_str("source")
 run_filter = _query_str("run")
 
-# Failure-reason drill-in from Overview / Nightly / Builds. Keep this
+# Failure-reason drill-in from Overview / Releases / Nightly / Builds. Keep this
 # contract unchanged: query ``failure_reason`` + ``source``, session
 # ``drill_run_records``, then ``TestRunsStats.from_records``.
 if failure_filter:

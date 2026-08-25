@@ -10,9 +10,10 @@ from libs.defaults import (
     DEFAULT_HW_MIN_RUNS,
     DEFAULT_HW_RUN_SCAN,
     DEFAULT_NIGHTLY_RUN_USER,
-    DEFAULT_OVERVIEW_REFRESH_MINUTES,
     DEFAULT_PADDLE_TLS_VERIFY,
     DEFAULT_PADDLE_TIMEOUT,
+    DEFAULT_REFRESH_MINUTES,
+    DEFAULT_RELEASE_BRANCHES,
 )
 from libs.exceptions import ConfigError
 
@@ -123,18 +124,44 @@ def get_cache_ttl() -> int:
     )
 
 
-def get_overview_refresh_minutes() -> int:
-    """Return Overview incremental refresh interval in minutes from config."""
-    minutes = _as_int(
-        read_config().get("overview", {}).get(
-            "refresh_minutes", DEFAULT_OVERVIEW_REFRESH_MINUTES
+def get_refresh_minutes() -> int:
+    """Return report snapshot lifetime in minutes from config.
+
+    Reads ``[cache] refresh_minutes``, then ``[cache] refresh_hours`` /
+    ``refresh_hour``, then ``[overview] refresh_minutes`` for older
+    configs, then the default.
+    """
+    config = read_config()
+    cache = config.get("cache", {})
+    raw = cache.get("refresh_minutes")
+    if raw in (None, ""):
+        hours = cache.get("refresh_hours")
+        if hours in (None, ""):
+            hours = cache.get("refresh_hour")
+        if hours not in (None, ""):
+            raw = _as_int(hours) * 60
+    if raw in (None, ""):
+        raw = config.get("overview", {}).get(
+            "refresh_minutes", DEFAULT_REFRESH_MINUTES
         )
-    )
+    minutes = _as_int(raw)
     if minutes < 1:
         raise ConfigError(
-            f"overview.refresh_minutes must be >= 1, got {minutes}"
+            f"cache.refresh_minutes must be >= 1, got {minutes}"
         )
     return minutes
+
+
+def get_refresh_seconds() -> int:
+    """Report snapshot lifetime in seconds (``refresh_minutes * 60``)."""
+    return get_refresh_minutes() * 60
+
+
+def get_release_branches() -> list[str]:
+    """Return stable release branches from config (comma-separated)."""
+    raw = read_config().get("release", {}).get("branches", "")
+    branches = [part.strip() for part in str(raw).split(",") if part.strip()]
+    return branches or list(DEFAULT_RELEASE_BRANCHES)
 
 
 def get_nightly_run_user() -> str:

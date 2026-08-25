@@ -1,39 +1,244 @@
-"""
-Hardware Reliability — machine-type-centric dashboard.
+"""Hardware reliability — machine-type-centric dashboard.
 
-Primary filter is ``machine_type``. Completed jobs are loaded from
-matching completed runs (Paddles ``/jobs/?machine_type=`` ignores that
-filter and returns the global latest queue). Architecture comes from
-live Paddles ``/nodes/`` inventory.
+Primary filter is ``machine_type``. Paddles ``/jobs/?machine_type=`` ignores
+that filter, so jobs are loaded for the posted window and scoped in memory.
+Architecture comes from live Paddles ``/nodes/`` inventory.
 """
 
 from __future__ import annotations
 
-import re
-import numpy as np
+from collections import defaultdict
+from datetime import date, datetime, timedelta, timezone
+
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
 import streamlit as st
 
-from libs.hardware import (
-    _MACHINE_ERROR_RE,
-    enrich_dataframe_with_hardware,
+from libs.config import get_hardware_config, get_refresh_seconds
+from libs.defaults import STATUS_COLOR_MAP
+from libs.exceptions import ConfigError, PaddlesAPIError
+from libs.reports.hardware import HardwareStats
+from libs.pulpito import base_url, job_link_column, job_url, run_link_column, run_url
+from libs.refresh import (
+    ensure_payload,
+    new_store,
+    patch_due,
+    refresh_every,
+    utc_day_end_exclusive,
+    utc_day_start,
 )
-from libs.config import get_hardware_config
-from libs.normalizer import (
-    get_completed_jobs_for_machine_type,
-    get_machine_type_arch_map,
-    get_machine_types_from_completed_runs,
+from libs.reports.jobs import JobsStats
+from libs.reports.models import GroupReliabilityStat, Job
+from libs.reports.testruns import TestRunsStats
+from libs.reports.utils import as_utc
+from libs.views import (
+    show_active_runs,
+    show_cluster_health,
+    show_daily_trends,
+    show_pass_heatmap,
+    show_scope_caption,
+    show_status_filtered_runs,
+    sidebar_branch_filter,
+    sidebar_date_range,
+    sidebar_machine_select,
+    sidebar_suite_filter,
+    sync_query_params,
 )
 
-# All tuning constants come from a single source of truth: libs/config.py
-# Override in ~/.config/ceph-test-dashboard.ini under [hardware]
-_HW          = get_hardware_config()
-_RUN_SCAN    = _HW["run_scan"]
-_MAX_RUNS    = _HW["max_runs"]
-_MIN_RUNS    = _HW["min_runs"]
+_HW = get_hardware_config()
+_MIN_RUNS = _HW["min_runs"]
 _DAYS_WINDOW = _HW["days_window"]
+
+_HW_RUN_COLUMNS = (
+    "name",
+    "status",
+    "branch",
+    "suite",
+    "sha",
+    "user",
+    "total_jobs",
+    "posted",
+)
+
+
+@st.cache_data(ttl=get_refresh_seconds())
+def _load_arch_map() -> dict[str, str]:
+    return HardwareStats.load_arch_map()
+
+
+@st.cache_resource
+def _hardware_runs_store() -> dict:
+    return new_store()
+
+
+@st.cache_resource
+def _hardware_jobs_store() -> dict:
+    return new_store()
+
+
+def _ensure_hardware_runs(start: date, end: date):
+    """Load posted runs for the window (no per-run job fetch)."""
+
+    def load_full():
+        window = HardwareStats.posted_between(start, end)
+        return window.runs.testruns, []
+
+    def load_recent(patch_since: datetime):
+        runs = TestRunsStats.since(patch_since)
+        return runs.testruns, []
+
+    return ensure_payload(
+        _hardware_runs_store(),
+        key=(start.isoformat(), end.isoformat()),
+        load_full=load_full,
+        load_recent=load_recent,
+        keep_since=utc_day_start(start),
+        keep_until=utc_day_end_exclusive(end),
+        spinner_full="Loading recent runs…",
+    )
+
+
+def _ensure_hardware_jobs(
+    start: date,
+    end: date,
+    machine_type: str,
+    testruns: list,
+):
+    """Fetch jobs only for the selected machine type's runs."""
+
+    def load_full():
+        scoped = HardwareStats.from_testruns_jobs(testruns, []).with_jobs()
+        return testruns, scoped.jobs.jobs
+
+    def load_recent(patch_since: datetime):
+        recent = TestRunsStats.since(patch_since)
+        wanted = (machine_type or "").strip().lower()
+        scoped_runs = [
+            run
+            for run in recent.testruns
+            if (run.machine_type or "").strip().lower() == wanted
+        ]
+        scoped = HardwareStats.from_testruns_jobs(scoped_runs, []).with_jobs()
+        return scoped_runs, scoped.jobs.jobs
+
+    return ensure_payload(
+        _hardware_jobs_store(),
+        key=(start.isoformat(), end.isoformat(), machine_type),
+        load_full=load_full,
+        load_recent=load_recent,
+        keep_since=utc_day_start(start),
+        keep_until=utc_day_end_exclusive(end),
+        spinner_full=f"Loading jobs for `{machine_type}`…",
+    )
+
+
+@st.fragment(run_every=refresh_every())
+def _periodic_hardware_refresh() -> None:
+    if patch_due(_hardware_runs_store()) or patch_due(_hardware_jobs_store()):
+        st.rerun()
+
+
+def _table_height(rows: int, *, cap: int = 800, min_rows: int = 1) -> int:
+    return min(cap, 38 + max(rows, min_rows) * 35)
+
+
+def _reliability_frame(rows: list[GroupReliabilityStat], key_label: str) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                key_label: row.key,
+                "Jobs": row.cnt_jobs,
+                "Passed": row.cnt_pass,
+                "Failed": row.cnt_fail,
+                "Pass Rate (%)": row.pct_pass,
+                "Fail Rate (%)": row.pct_fail,
+                "Avg Duration (min)": round((row.avg_duration or 0) / 60, 1),
+            }
+            for row in rows
+        ]
+    )
+
+
+def _status_by_group(jobs: list[Job], group: str) -> pd.DataFrame:
+    counts: dict[tuple[str, str], int] = defaultdict(int)
+    for job in jobs:
+        key = getattr(job, group, "") or "unknown"
+        counts[(key, job.status or "unknown")] += 1
+    return pd.DataFrame(
+        [
+            {group: key, "status": status, "count": count}
+            for (key, status), count in counts.items()
+        ]
+    )
+
+
+def _show_reliability(jobs: JobsStats, group: str, *, key_label: str, title: str) -> None:
+    rows = [row for row in jobs.reliability_by(group) if row.key != "unknown"]
+    if not rows:
+        st.info(f"No {key_label.lower()} data for this machine type.")
+        return
+    frame = _reliability_frame(rows, key_label)
+    st.dataframe(frame, width="stretch", hide_index=True)
+
+    st.divider()
+    status_frame = _status_by_group(jobs.jobs, group)
+    status_frame = status_frame[status_frame[group] != "unknown"]
+    if not status_frame.empty:
+        fig = px.bar(
+            status_frame,
+            x=group,
+            y="count",
+            color="status",
+            color_discrete_map=STATUS_COLOR_MAP,
+            barmode="stack",
+            text_auto=True,
+            title=title,
+            labels={
+                group: key_label,
+                "count": "Jobs",
+                "status": "Status",
+            },
+        )
+        fig.update_layout(height=400, legend_title_text="Status")
+        st.plotly_chart(fig, width="stretch")
+
+    fig_pass = px.bar(
+        frame.sort_values("Pass Rate (%)", ascending=True),
+        x="Pass Rate (%)",
+        y=key_label,
+        orientation="h",
+        text_auto=True,
+        title=f"Pass Rate by {key_label}",
+        labels={key_label: key_label, "Pass Rate (%)": "Pass Rate (%)"},
+        color_discrete_sequence=[STATUS_COLOR_MAP["pass"]],
+    )
+    fig_pass.update_layout(
+        height=max(280, 40 * len(frame)),
+        xaxis_range=[0, 105],
+    )
+    st.plotly_chart(fig_pass, width="stretch")
+
+
+def _drill_to_jobs(run_names: list[str], reason: str, *, key: str) -> None:
+    if st.button(f"View {len(run_names)} Impacted Jobs →", key=key):
+        st.session_state["drill_run_names"] = run_names
+        st.switch_page(
+            "pages/dashboard/jobs.py",
+            query_params={"failure_reason": reason, "source": "hardware"},
+        )
+
+
+def _drill_to_runs(
+    runs: TestRunsStats, run_names: list[str], reason: str, *, key: str
+) -> None:
+    if st.button(f"View {len(run_names)} Impacted Runs →", key=key):
+        st.session_state["drill_run_names"] = run_names
+        st.session_state["drill_run_records"] = runs.records_for_names(run_names)
+        st.switch_page(
+            "pages/dashboard/testruns.py",
+            query_params={"failure_reason": reason, "source": "hardware"},
+        )
+
 
 st.markdown(
     "<h1 style='text-align: center;'>Hardware Reliability</h1>",
@@ -44,474 +249,299 @@ st.markdown(
     "across branches, suites, and OS."
 )
 
-# ── sidebar: machine type first ───────────────────────────────────────
 st.sidebar.header("Filters")
 
-# Days window slider — controls both the machine type dropdown AND
-# the job fetch so the two are always in sync.
-days_window = st.sidebar.slider(
-    "Days Window",
-    min_value=7,
-    max_value=30,
-    value=_DAYS_WINDOW,
-    step=7,
-    help=(
-        "Only show machine types and jobs from completed runs posted "
-        "within this many days. Increase if your machine type runs infrequently."
-    ),
+today = date.today()
+start_date, end_date = sidebar_date_range(
+    prefix="hardware",
+    default_start=today - timedelta(days=max(_DAYS_WINDOW, 1)),
+    default_end=today,
 )
 
-arch_map = get_machine_type_arch_map()
+try:
+    payload_runs, _, loaded_at = _ensure_hardware_runs(start_date, end_date)
+    arch_map = _load_arch_map()
+except (PaddlesAPIError, ConfigError) as exc:
+    st.warning(f"Could not load hardware data: {exc}")
+    st.stop()
 
-# Pass the same days_window to the dropdown so it only lists machine
-# types that actually have data in the selected window.
-machine_types = get_machine_types_from_completed_runs(
-    count=_RUN_SCAN,
-    days_window=days_window,
+window = HardwareStats.from_testruns_jobs(
+    payload_runs, [], arch_by_machine_type=arch_map
 )
+if not window.runs.testruns:
+    st.warning(f"No runs found between {start_date} and {end_date}.")
+    st.stop()
 
+machine_types = window.machine_types()
 if not machine_types:
     st.warning(
-        f"No completed runs with a machine type found in the last "
-        f"**{days_window} days**. Try increasing the **Days Window** slider."
+        f"No runs with a machine type found between {start_date} and {end_date}."
     )
     st.stop()
 
-selected_mt = st.sidebar.selectbox(
-    "Machine Type",
+selected_mt = sidebar_machine_select(
     machine_types,
-    help="Only machine types with completed runs in the selected Days Window are shown.",
+    prefix="hardware",
+    help_text="Only machine types with runs in the selected date range are shown.",
 )
-
-arch_label = arch_map.get(selected_mt.lower(), "Unknown")
+arch_label = window.architecture(selected_mt)
 st.sidebar.caption(f"Architecture: **{arch_label}**")
 
-with st.spinner(f"Loading completed jobs for {selected_mt}…"):
-    jobs_raw = get_completed_jobs_for_machine_type(
-        selected_mt,
-        run_scan=_RUN_SCAN,
-        max_runs=_MAX_RUNS,
-        days_window=days_window,
-    )
-if not jobs_raw:
-    st.warning(
-        f"No completed jobs (pass/fail/dead) found for **{selected_mt}** "
-        f"in the last {days_window} days "
-        f"(scanned {_RUN_SCAN} most recent runs)."
-    )
+scoped_runs = window.for_machine_type(selected_mt)
+if not scoped_runs.runs.testruns:
+    st.warning(f"No runs found for machine type **{selected_mt}**.")
     st.stop()
 
-# ── thin-data warning + scope info banner ────────────────────────────
-_n_runs = len({j.get("run_name", "") for j in jobs_raw if j.get("run_name")})
-if _n_runs < _MIN_RUNS:
-    st.warning(
-        f"⚠️ Only **{_n_runs} run{'s' if _n_runs != 1 else ''}** found for "
-        f"**{selected_mt}** in the last {days_window} days — "
-        "statistics may not be reliable. "
-        "Try increasing the **Days Window** slider."
+try:
+    _, payload_jobs, jobs_loaded_at = _ensure_hardware_jobs(
+        start_date, end_date, selected_mt, scoped_runs.runs.testruns
     )
-st.info(
-    f"Showing **{len(jobs_raw)} jobs** from **{_n_runs} run{'s' if _n_runs != 1 else ''}** "
-    f"on **{selected_mt}** · last **{days_window} days** "
-    f"(up to {_MAX_RUNS} runs, scanned {_RUN_SCAN})."
-)
+except (PaddlesAPIError, ConfigError) as exc:
+    st.warning(f"Could not load hardware jobs: {exc}")
+    st.stop()
 
-# Build DataFrame first, then vectorise architecture enrichment (H-05)
-df_jobs = pd.DataFrame(jobs_raw)
+_periodic_hardware_refresh()
 
-df_jobs["posted"] = pd.to_datetime(df_jobs["posted"], errors="coerce")
-df_jobs["machine_type"] = (
-    df_jobs["machine_type"].fillna(selected_mt).replace("", selected_mt)
-)
-df_jobs["branch"] = df_jobs["branch"].fillna("unknown").replace("", "unknown")
-df_jobs["suite"] = df_jobs["suite"].fillna("unknown").replace("", "unknown")
-df_jobs["os_type"] = df_jobs["os_type"].fillna("").replace("", "unknown")
-
-# Vectorised arch enrichment — replaces enrich_jobs_with_hardware() loop (H-05)
-df_jobs = enrich_dataframe_with_hardware(
-    df_jobs,
+loaded_at = jobs_loaded_at or loaded_at
+scoped = HardwareStats.from_testruns_jobs(
+    scoped_runs.runs.testruns,
+    payload_jobs,
     arch_by_machine_type=arch_map,
-    fallback_arch=arch_label,
 )
 
-# Secondary filters from jobs for this machine type
-available_branches = sorted(
-    b for b in df_jobs["branch"].dropna().unique().tolist() if b
+all_branches = sorted({run.branch for run in scoped.runs.testruns if run.branch})
+selected_branches = sidebar_branch_filter(
+    all_branches,
+    prefix="hardware",
+    reset_token=selected_mt,
 )
-selected_branches = st.sidebar.multiselect(
-    "Branch",
-    available_branches,
-    default=available_branches,
+all_suites = sorted({run.suite for run in scoped.runs.testruns if run.suite})
+selected_suites = sidebar_suite_filter(
+    all_suites,
+    prefix="hardware",
+    reset_token=selected_mt,
 )
+
+runs = scoped.runs.for_branches(selected_branches).for_suites(selected_suites)
+jobs = scoped.jobs.for_run_set(runs.testruns)
+
+sync_query_params(
+    {
+        "machine": selected_mt,
+        "from": start_date.isoformat(),
+        "to": end_date.isoformat(),
+        "branch": (
+            None
+            if set(selected_branches) == set(all_branches)
+            else ",".join(selected_branches)
+        ),
+        "suite": (
+            None
+            if set(selected_suites) == set(all_suites)
+            else ",".join(selected_suites)
+        ),
+    }
+)
+
 if not selected_branches:
     st.warning("Select at least one branch.")
     st.stop()
-
-available_suites = sorted(
-    s for s in df_jobs["suite"].dropna().unique().tolist() if s
-)
-selected_suites = st.sidebar.multiselect(
-    "Suite",
-    available_suites,
-    default=available_suites,
-)
 if not selected_suites:
     st.warning("Select at least one suite.")
     st.stop()
-
-filt_jobs = df_jobs[
-    df_jobs["branch"].isin(selected_branches)
-    & df_jobs["suite"].isin(selected_suites)
-].copy()
-if filt_jobs.empty:
-    st.warning("No jobs match the selected branch/suite filters.")
+if not runs.testruns:
+    st.warning("No runs match the selected branch/suite filters.")
+    st.stop()
+if not jobs.jobs:
+    st.warning(f"No job data available for **{selected_mt}**.")
     st.stop()
 
-# ── constants ─────────────────────────────────────────────────────────
-color_map = {
-    "pass": "#54b399",
-    "fail": "#d36086",
-    "dead": "#aa6556",
-}
+now = datetime.now(timezone.utc)
+pulpito = base_url()
+health = runs.cluster_health(jobs, now=now)
+window_label = f"{selected_mt} · {start_date:%Y-%m-%d} → {end_date:%Y-%m-%d}"
 
-# ── KPIs for selected machine type ────────────────────────────────────
-total_jobs = len(filt_jobs)
-passed = int((filt_jobs["status"] == "pass").sum())
-failed = int(filt_jobs["status"].isin(["fail", "dead"]).sum())
-pass_rate = round(passed / total_jobs * 100, 1) if total_jobs else 0.0
-n_branches = filt_jobs["branch"].nunique()
-n_suites = filt_jobs["suite"].nunique()
-avg_dur_min = round(filt_jobs["duration"].mean() / 60, 1) if total_jobs else 0.0
+show_cluster_health(
+    health,
+    heading=f"Hardware health · {window_label}",
+    show_branch_chip=True,
+    show_worst_branch=True,
+)
+show_scope_caption(runs, jobs, loaded_at=loaded_at, now=now)
+st.caption(f"Architecture **{arch_label}**.")
 
-st.subheader(f"{selected_mt} — Hardware Dashboard")
-k1, k2, k3, k4, k5 = st.columns(5)
-k1.metric("Total Jobs", total_jobs)
-k2.metric("Pass Rate", f"{pass_rate}%")
-k3.metric("Branches", n_branches)
-k4.metric("Suites", n_suites)
-k5.metric("Architecture", arch_label)
+n_runs = len(runs.testruns)
+if n_runs < _MIN_RUNS:
+    st.warning(
+        f"Only **{n_runs} run{'s' if n_runs != 1 else ''}** found for "
+        f"**{selected_mt}** in this window — statistics may not be reliable. "
+        "Try widening the date range."
+    )
 
-tab_branch, tab_suite, tab_os, tab_fail = st.tabs(
-    ["By Branch", "By Suite", "By OS", "Machine Errors"]
+tab_branch, tab_suite, tab_os, tab_fail, tab_runs = st.tabs(
+    ["By Branch", "By Suite", "By OS", "Machine Errors", "Runs"]
 )
 
+completed = jobs.completed_stats
 
-def _reliability_table(df: pd.DataFrame, group_col: str) -> pd.DataFrame:
-    stats = df.groupby(group_col).agg(
-        jobs=("job_id", "count"),
-        passed=("status", lambda s: (s == "pass").sum()),
-        failed=("status", lambda s: s.isin(["fail", "dead"]).sum()),
-        avg_duration_s=("duration", "mean"),
-    ).reset_index()
-    stats["pass_rate"] = stats.apply(
-        lambda r: round(r["passed"] / r["jobs"] * 100, 1) if r["jobs"] else 0.0,
-        axis=1,
-    )
-    stats["fail_rate"] = stats.apply(
-        lambda r: round(r["failed"] / r["jobs"] * 100, 1) if r["jobs"] else 0.0,
-        axis=1,
-    )
-    stats["avg_duration_min"] = (stats["avg_duration_s"] / 60).round(1)
-    return stats.sort_values("fail_rate", ascending=False)
-
-
-def _status_bar(df: pd.DataFrame, group_col: str, title: str):
-    status_counts = (
-        df.groupby([group_col, "status"]).size().reset_index(name="count")
-    )
-    fig = px.bar(
-        status_counts,
-        x=group_col,
-        y="count",
-        color="status",
-        color_discrete_map=color_map,
-        barmode="stack",
-        text_auto=True,
-        title=title,
-        labels={group_col: group_col.replace("_", " ").title(), "count": "Jobs"},
-    )
-    fig.update_layout(height=400, legend_title_text="Status")
-    st.plotly_chart(fig, width="stretch")
-
-
-def _pass_rate_bar(stats: pd.DataFrame, group_col: str, title: str):
-    fig = px.bar(
-        stats.sort_values("pass_rate", ascending=True),
-        x="pass_rate",
-        y=group_col,
-        orientation="h",
-        text_auto=True,
-        title=title,
-        labels={
-            group_col: group_col.replace("_", " ").title(),
-            "pass_rate": "Pass Rate (%)",
-        },
-        color_discrete_sequence=["#54b399"],
-    )
-    fig.update_layout(
-        height=max(280, 40 * len(stats)),
-        xaxis_range=[0, 105],
-    )
-    st.plotly_chart(fig, width="stretch")
-
-
-# =====================================================================
-#  TAB — BY BRANCH
-# =====================================================================
 with tab_branch:
     st.subheader(f"Branch Comparison — {selected_mt}")
     st.caption("How this machine type performs across branches.")
-
-    branch_stats = _reliability_table(filt_jobs, "branch")
-    st.dataframe(
-        branch_stats.rename(columns={
-            "branch": "Branch",
-            "jobs": "Jobs",
-            "passed": "Passed",
-            "failed": "Failed",
-            "pass_rate": "Pass Rate (%)",
-            "fail_rate": "Fail Rate (%)",
-            "avg_duration_min": "Avg Duration (min)",
-        })[[
-            "Branch", "Jobs", "Passed", "Failed",
-            "Pass Rate (%)", "Fail Rate (%)", "Avg Duration (min)",
-        ]],
-        width="stretch",
-        hide_index=True,
+    _show_reliability(
+        completed,
+        "branch",
+        key_label="Branch",
+        title=f"Job Status by Branch — {selected_mt}",
     )
 
-    st.divider()
-    _status_bar(
-        filt_jobs, "branch",
-        f"Job Status by Branch — {selected_mt}",
-    )
-    _pass_rate_bar(
-        branch_stats, "branch",
-        f"Pass Rate by Branch — {selected_mt}",
-    )
-
-# =====================================================================
-#  TAB — BY SUITE
-# =====================================================================
 with tab_suite:
     st.subheader(f"Suite Health — {selected_mt}")
-
-    suite_stats = _reliability_table(filt_jobs, "suite")
-    st.dataframe(
-        suite_stats.rename(columns={
-            "suite": "Suite",
-            "jobs": "Jobs",
-            "passed": "Passed",
-            "failed": "Failed",
-            "pass_rate": "Pass Rate (%)",
-            "fail_rate": "Fail Rate (%)",
-            "avg_duration_min": "Avg Duration (min)",
-        })[[
-            "Suite", "Jobs", "Passed", "Failed",
-            "Pass Rate (%)", "Fail Rate (%)", "Avg Duration (min)",
-        ]],
-        width="stretch",
-        hide_index=True,
+    _show_reliability(
+        completed,
+        "suite",
+        key_label="Suite",
+        title=f"Job Status by Suite — {selected_mt}",
     )
 
-    st.divider()
-    _status_bar(
-        filt_jobs, "suite",
-        f"Job Status by Suite — {selected_mt}",
-    )
-    _pass_rate_bar(
-        suite_stats, "suite",
-        f"Pass Rate by Suite — {selected_mt}",
-    )
-
-# =====================================================================
-#  TAB — BY OS
-# =====================================================================
 with tab_os:
     st.subheader(f"OS Distribution — {selected_mt}")
-
-    os_jobs = filt_jobs[filt_jobs["os_type"] != "unknown"].copy()
-    # H-09: show count of excluded jobs so the exclusion is visible
-    excluded_os = len(filt_jobs) - len(os_jobs)
+    os_jobs = JobsStats.from_jobs(
+        [
+            job
+            for job in completed.jobs
+            if job.os_type and job.os_type != "unknown"
+        ]
+    )
+    excluded_os = len(completed.jobs) - len(os_jobs.jobs)
     if excluded_os > 0:
         st.caption(
-            f"ℹ️ {excluded_os} job{'s' if excluded_os != 1 else ''} excluded — "
+            f"{excluded_os} job{'s' if excluded_os != 1 else ''} excluded — "
             "no OS type recorded."
         )
-
-    if os_jobs.empty:
+    if not os_jobs.jobs:
         st.info("No OS type information available for this machine type.")
     else:
-        os_stats = _reliability_table(os_jobs, "os_type")
-        st.dataframe(
-            os_stats.rename(columns={
-                "os_type": "OS Type",
-                "jobs": "Jobs",
-                "passed": "Passed",
-                "failed": "Failed",
-                "pass_rate": "Pass Rate (%)",
-                "fail_rate": "Fail Rate (%)",
-                "avg_duration_min": "Avg Duration (min)",
-            })[[
-                "OS Type", "Jobs", "Passed", "Failed",
-                "Pass Rate (%)", "Fail Rate (%)", "Avg Duration (min)",
-            ]],
-            width="stretch",
-            hide_index=True,
+        _show_reliability(
+            os_jobs,
+            "os_type",
+            key_label="OS Type",
+            title=f"Job Status by OS — {selected_mt}",
         )
-
-        st.divider()
-        _status_bar(
-            os_jobs, "os_type",
-            f"Job Status by OS — {selected_mt}",
-        )
-
-        # Branch × OS heatmap for this machine type
         st.divider()
         st.subheader("Branch × OS Pass Rate")
-        pivot = os_jobs.groupby(["branch", "os_type"]).agg(
-            total=("job_id", "count"),
-            passed=("status", lambda s: (s == "pass").sum()),
-        ).reset_index()
-        pivot["pass_rate"] = ((pivot["passed"] / pivot["total"]) * 100).round(1)
-
-        branches = sorted(pivot["branch"].unique())
-        os_list = sorted(pivot["os_type"].unique())
-        heat = np.full((len(branches), len(os_list)), np.nan)
-        anno = [[""] * len(os_list) for _ in range(len(branches))]
-        b_idx = {b: i for i, b in enumerate(branches)}
-        o_idx = {o: i for i, o in enumerate(os_list)}
-
-        # H-07: vectorised numpy index assignment — replaces iterrows() loop
-        rows_i = pivot["branch"].map(b_idx).to_numpy()
-        cols_i = pivot["os_type"].map(o_idx).to_numpy()
-        heat[rows_i, cols_i] = pivot["pass_rate"].to_numpy()
-        for r, c, rate, tot in zip(
-            rows_i, cols_i, pivot["pass_rate"], pivot["total"]
-        ):
-            anno[r][c] = f"{rate}%<br>({int(tot)})"
-
-        fig_heat = go.Figure(data=go.Heatmap(
-            z=heat,
-            x=os_list,
-            y=branches,
-            text=anno,
-            texttemplate="%{text}",
-            colorscale=[[0, "#d36086"], [0.5, "#d6bf57"], [1, "#54b399"]],
-            colorbar=dict(title="Pass Rate %"),
-            zmin=0,
-            zmax=100,
-        ))
-        fig_heat.update_layout(
-            height=max(300, 50 * len(branches)),
-            xaxis_title="OS Type",
-            yaxis_title="Branch",
-            yaxis=dict(autorange="reversed"),
+        show_pass_heatmap(
+            os_jobs.pass_matrix(row="branch", col="os_type"),
             title=f"Branch × OS — {selected_mt}",
         )
-        st.plotly_chart(fig_heat, width="stretch")
 
-# =====================================================================
-#  TAB — MACHINE ERRORS
-# =====================================================================
 with tab_fail:
+    st.subheader("Daily trend")
+    show_daily_trends(jobs)
+    st.divider()
     st.subheader(f"Machine Errors — {selected_mt}")
     st.caption(
         "Lab/infrastructure failures only (dead jobs, reimaging, lock/SSH, "
         "provisioning timeouts). Product test failures are excluded."
     )
-
-    failing = filt_jobs[filt_jobs["status"].isin(["fail", "dead"])].copy()
-    failing["failure_reason"] = (
-        failing["failure_template"]
-        .fillna("")
-        .replace("", "Unknown failure")
-    )
-
-    # H-06: vectorised machine-error filter — replaces row-wise apply() loop
-    dead_mask = failing["status"] == "dead"
-    reason_known = failing["failure_reason"] != "Unknown failure"
-    regex_mask = failing["failure_reason"].str.contains(
-        _MACHINE_ERROR_RE.pattern, flags=re.IGNORECASE, regex=True, na=False
-    )
-    # dead + no reason → infra; dead + matching reason → infra
-    # dead + non-matching reason → test-timeout, exclude
-    # fail + matching reason → infra
-    failing = failing[
-        (dead_mask & (~reason_known | regex_mask)) | (~dead_mask & regex_mask)
-    ].copy()
-
-    if failing.empty:
+    error_jobs = jobs.machine_errors()
+    if not error_jobs:
         st.info(
             f"No machine errors for **{selected_mt}** with the selected filters."
         )
     else:
+        error_stats = JobsStats.from_jobs(error_jobs)
+        reasons = error_stats.top_failure_reasons(n=None)
         f1, f2, f3 = st.columns(3)
-        f1.metric("Machine Errors", len(failing))
-        f2.metric("Branches Impacted", failing["branch"].nunique())
-        f3.metric("Suites Impacted", failing["suite"].nunique())
+        f1.metric("Machine Errors", len(error_jobs))
+        f2.metric(
+            "Branches Impacted",
+            len({job.branch for job in error_jobs if job.branch}),
+        )
+        f3.metric(
+            "Suites Impacted",
+            len({job.suite for job in error_jobs if job.suite}),
+        )
 
         st.divider()
         st.markdown("**Top Machine Error Reasons**")
-        fail_summary = failing.groupby("failure_reason").agg(
-            jobs=("job_id", "count"),
-            branches=("branch", "nunique"),
-            suites=("suite", "nunique"),
-            runs=("run_name", "nunique"),
-        ).reset_index()
-        fail_summary["share"] = (
-            fail_summary["jobs"] / fail_summary["jobs"].sum() * 100
-        ).round(1)
-        fail_summary = fail_summary.sort_values("jobs", ascending=False)
-
+        fail_frame = pd.DataFrame(
+            [
+                {
+                    "Machine Error": row.reason,
+                    "Jobs": row.count,
+                    "Branches": row.branches_impacted,
+                    "Suites": row.suites_impacted,
+                    "Runs": row.runs_impacted,
+                    "Share (%)": row.pct,
+                }
+                for row in reasons
+            ]
+        )
         event = st.dataframe(
-            fail_summary.rename(columns={
-                "failure_reason": "Machine Error",
-                "jobs": "Jobs",
-                "branches": "Branches",
-                "suites": "Suites",
-                "runs": "Runs",
-                "share": "Share (%)",
-            }),
+            fail_frame,
             width="stretch",
             hide_index=True,
             on_select="rerun",
             selection_mode="single-row",
-            height=min(500, 38 + len(fail_summary) * 35),
+            height=_table_height(len(fail_frame), cap=500),
+            key="hardware_machine_errors",
         )
-
-        selected_rows = event.selection.rows
+        selected_rows = event.selection.rows if event.selection else []
         if selected_rows:
-            reason = fail_summary.iloc[selected_rows[0]]["failure_reason"]
-            reason_jobs = failing[failing["failure_reason"] == reason]
+            reason = str(fail_frame.iloc[selected_rows[0]]["Machine Error"])
+            matching = error_stats.matching_failure(reason)
+            run_names = list(
+                dict.fromkeys(job.run_name for job in matching if job.run_name)
+            )
+            btn_jobs, btn_runs = st.columns(2)
+            with btn_jobs:
+                _drill_to_jobs(run_names, reason, key="hardware_view_jobs")
+            with btn_runs:
+                _drill_to_runs(runs, run_names, reason, key="hardware_view_runs")
+
             st.markdown(f"**Jobs with:** `{reason[:120]}`")
-            detail = reason_jobs[[
-                "branch", "suite", "os_type", "description",
-                "run_name", "status", "posted",
-            ]].sort_values("posted", ascending=False).rename(columns={
-                "branch": "Branch",
-                "suite": "Suite",
-                "os_type": "OS",
-                "description": "Test",
-                "run_name": "Run",
-                "status": "Status",
-                "posted": "Posted",
-            })
+            detail = pd.DataFrame(
+                [
+                    {
+                        "Branch": job.branch or "unknown",
+                        "Suite": job.suite or "unknown",
+                        "OS": job.os_type or "—",
+                        "Test": job.description or "—",
+                        "Job ID": job_url(job.run_name, job.job_id, base=pulpito),
+                        "Run": run_url(job.run_name, base=pulpito),
+                        "Status": job.status,
+                        "Posted": job.posted,
+                    }
+                    for job in sorted(
+                        matching,
+                        key=lambda job: as_utc(job.posted)
+                        or datetime.min.replace(tzinfo=timezone.utc),
+                        reverse=True,
+                    )
+                ]
+            )
             st.dataframe(
                 detail,
+                column_config={
+                    **job_link_column("Job ID", "Job ID", base=pulpito),
+                    **run_link_column("Run", "Run", base=pulpito),
+                },
                 width="stretch",
                 hide_index=True,
-                height=min(400, 38 + len(detail) * 35),
+                height=_table_height(len(detail), cap=400),
             )
 
         st.divider()
         st.markdown("**Machine Errors by Branch**")
-        fail_branch = (
-            failing.groupby("branch")["job_id"]
-            .count()
-            .reset_index(name="errors")
-            .sort_values("errors", ascending=False)
-        )
+        by_branch: dict[str, int] = defaultdict(int)
+        for job in error_jobs:
+            by_branch[job.branch or "unknown"] += 1
+        fail_branch = pd.DataFrame(
+            [
+                {"branch": branch, "errors": count}
+                for branch, count in by_branch.items()
+            ]
+        ).sort_values("errors", ascending=False)
         fig_fb = px.bar(
             fail_branch,
             x="branch",
@@ -519,7 +549,25 @@ with tab_fail:
             text_auto=True,
             title=f"Machine Errors by Branch — {selected_mt}",
             labels={"branch": "Branch", "errors": "Machine Errors"},
-            color_discrete_sequence=["#d36086"],
+            color_discrete_sequence=[STATUS_COLOR_MAP["fail"]],
         )
         fig_fb.update_layout(height=360)
         st.plotly_chart(fig_fb, width="stretch")
+
+with tab_runs:
+    st.subheader("Active runs")
+    show_active_runs(runs, pulpito, now=now, collapse_table=True)
+    st.divider()
+    ordered = sorted(
+        runs.testruns,
+        key=lambda run: as_utc(run.posted)
+        or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
+    show_status_filtered_runs(
+        ordered,
+        pulpito,
+        prefix="hardware",
+        columns=_HW_RUN_COLUMNS,
+        heading="Runs",
+    )

@@ -169,3 +169,19 @@ def as_job_list(raw) -> list[dict]:
         if isinstance(raw.get("jobs"), list):
             return [item for item in raw["jobs"] if isinstance(item, dict)]
     return []
+
+
+def as_node_list(raw) -> list[dict]:
+    """Normalize Paddles node inventory responses to a list of node dicts."""
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        return [item for item in raw if isinstance(item, dict)]
+    if isinstance(raw, dict):
+        for key in ("nodes", "items", "results"):
+            value = raw.get(key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+        if raw.get("machine_type") or raw.get("name") or raw.get("arch"):
+            return [raw]
+    return []

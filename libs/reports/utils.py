@@ -59,6 +59,19 @@ def as_utc(value: datetime | None) -> datetime | None:
     return value.astimezone(timezone.utc)
 
 
+def sha_matches(value: str, needle: str) -> bool:
+    """True if ``value`` and ``needle`` refer to the same commit (prefix-safe)."""
+    have = (value or "").strip().lower()
+    want = (needle or "").strip().lower()
+    if not want:
+        return True
+    if want in {"unknown", "—", "-"}:
+        return (not have) or have in {"unknown", "—", "-"}
+    if not have:
+        return False
+    return have.startswith(want) or want.startswith(have)
+
+
 def format_age(posted: datetime | None, now: datetime | None = None) -> str:
     """Human-readable age such as ``12m``, ``3.2h``, or ``1.5d``."""
     ts = as_utc(posted)

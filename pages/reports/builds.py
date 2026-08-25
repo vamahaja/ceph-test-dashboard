@@ -1,10 +1,85 @@
-import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
+"""Build analysis for a branch, suite mix, and commit SHA."""
+
+from __future__ import annotations
+
+from datetime import date, datetime, timedelta, timezone
+
 import streamlit as st
 
-from libs.normalizer import get_jobs_data, get_runs_data
-from libs.config import get_pulpito_url
+from libs.exceptions import ConfigError, PaddlesAPIError
+from libs.pulpito import base_url
+from libs.refresh import (
+    ensure_payload,
+    new_store,
+    periodic_rerun,
+    refresh_every,
+    utc_day_end_exclusive,
+    utc_day_start,
+)
+from libs.reports.jobs import JobsStats
+from libs.reports.testruns import TestRunsStats
+from libs.reports.utils import as_utc
+from libs.views import (
+    sidebar_branch_select,
+    sidebar_date_range,
+    sidebar_sha_select,
+    sidebar_suite_filter,
+    show_active_runs,
+    show_cluster_health,
+    show_daily_trends,
+    show_job_mix,
+    show_needs_attention,
+    show_scope_caption,
+    show_sha_results,
+    show_status_filtered_runs,
+    sync_query_params,
+)
+
+_BUILD_RUN_COLUMNS = (
+    "name",
+    "status",
+    "suite",
+    "sha",
+    "user",
+    "machine_type",
+    "total_jobs",
+    "posted",
+)
+
+
+@st.cache_resource
+def _builds_store() -> dict:
+    return new_store()
+
+
+def _ensure_builds_payload(start: date, end: date):
+    """Full window load once, then merge recent runs/jobs on the refresh interval."""
+
+    def load_full():
+        runs = TestRunsStats.posted_between(start, end)
+        jobs = JobsStats.for_testruns(runs.testruns)
+        return runs.testruns, jobs.jobs
+
+    def load_recent(patch_since: datetime):
+        runs = TestRunsStats.since(patch_since)
+        jobs = JobsStats.for_testruns(runs.testruns)
+        return runs.testruns, jobs.jobs
+
+    return ensure_payload(
+        _builds_store(),
+        key=(start.isoformat(), end.isoformat()),
+        load_full=load_full,
+        load_recent=load_recent,
+        keep_since=utc_day_start(start),
+        keep_until=utc_day_end_exclusive(end),
+        spinner_full="Loading recent runs…",
+    )
+
+
+@st.fragment(run_every=refresh_every())
+def _periodic_builds_refresh() -> None:
+    periodic_rerun(_builds_store())
+
 
 st.markdown(
     "<h1 style='text-align: center;'>Build Analysis</h1>",
@@ -16,359 +91,142 @@ st.markdown(
 
 st.sidebar.header("Filters")
 
-runs_data = get_runs_data(count=200)
-if not runs_data:
-    st.warning("Could not fetch run data from the API.")
-    st.stop()
-
-df_runs = pd.DataFrame(runs_data)
-df_runs["posted"] = pd.to_datetime(df_runs["posted"], errors="coerce")
-df_runs.drop_duplicates(subset=["name"], inplace=True)
-
-completed_statuses = {"pass", "fail", "dead"}
-completed_runs = df_runs[df_runs["status"].isin(completed_statuses)].copy()
-
-available_branches = sorted(
-    b for b in completed_runs["branch"].dropna().unique().tolist() if b
+today = date.today()
+start_date, end_date = sidebar_date_range(
+    prefix="builds",
+    default_start=today - timedelta(days=7),
+    default_end=today,
 )
-if not available_branches:
-    st.warning("No completed branches found in recent runs.")
-    st.stop()
 
-selected_branch = st.sidebar.selectbox("Branch", available_branches)
-
-branch_runs = completed_runs[completed_runs["branch"] == selected_branch].copy()
-if branch_runs.empty:
-    st.warning(f"No completed runs found for branch **{selected_branch}**.")
-    st.stop()
-
-all_suites = sorted(branch_runs["suite"].dropna().unique().tolist())
-selected_suites = st.sidebar.multiselect("Suite", all_suites, default=all_suites)
-
-filt_runs = branch_runs[branch_runs["suite"].isin(selected_suites)].copy()
-if filt_runs.empty:
-    st.warning("No completed runs match the selected filters.")
-    st.stop()
-
-run_info = filt_runs.set_index("name")[["branch", "suite", "sha_id"]].to_dict("index")
-
-all_jobs: list[dict] = []
-run_names = filt_runs["name"].unique().tolist()
-progress_bar = st.progress(0, text="Loading job data…")
-for i, run_name in enumerate(run_names):
-    progress_bar.progress(
-        int((i + 1) / len(run_names) * 100),
-        text=f"Loading jobs for run {i + 1} of {len(run_names)}…",
+try:
+    payload_runs, payload_jobs, loaded_at = _ensure_builds_payload(
+        start_date, end_date
     )
-    run_jobs = get_jobs_data(run_name=run_name)
-    if run_jobs:
-        info = run_info.get(run_name, {})
-        for job in run_jobs:
-            if not job.get("branch"):
-                job["branch"] = info.get("branch", "")
-            if not job.get("suite"):
-                job["suite"] = info.get("suite", "")
-            if not job.get("sha_id"):
-                job["sha_id"] = info.get("sha_id", "")
-            all_jobs.append(job)
-progress_bar.empty()
+except (PaddlesAPIError, ConfigError) as exc:
+    st.warning(f"Could not load build data: {exc}")
+    st.stop()
 
-if not all_jobs:
+_periodic_builds_refresh()
+
+window_runs = TestRunsStats.from_testruns(payload_runs)
+all_jobs = JobsStats.from_jobs(payload_jobs)
+if not window_runs.testruns:
+    st.warning(
+        f"No runs found between {start_date} and {end_date}."
+    )
+    st.stop()
+
+branches = sorted({run.branch for run in window_runs.testruns if run.branch})
+if not branches:
+    st.warning("No branches found in the selected window.")
+    st.stop()
+
+selected_branch = sidebar_branch_select(branches, prefix="builds")
+branch_runs = window_runs.for_branch(selected_branch)
+if not branch_runs.testruns:
+    st.warning(f"No runs found for branch **{selected_branch}**.")
+    st.stop()
+
+all_suites = sorted({run.suite for run in branch_runs.testruns if run.suite})
+selected_suites = sidebar_suite_filter(
+    all_suites,
+    prefix="builds",
+    reset_token=selected_branch,
+)
+
+suite_runs = branch_runs.for_suites(selected_suites)
+sha_values = sorted(
+    {(run.sha_short or "unknown") for run in suite_runs.testruns}
+)
+selected_sha = sidebar_sha_select(sha_values, prefix="builds")
+runs = suite_runs.for_sha(selected_sha) if selected_sha else suite_runs
+
+sync_query_params(
+    {
+        "branch": selected_branch,
+        "from": start_date.isoformat(),
+        "to": end_date.isoformat(),
+        "suite": (
+            None
+            if set(selected_suites) == set(all_suites)
+            else ",".join(selected_suites)
+        ),
+        "sha": selected_sha or None,
+    }
+)
+
+if not runs.testruns:
+    st.warning("No runs match the selected filters.")
+    st.stop()
+
+jobs = all_jobs.for_run_set(runs.testruns)
+if not jobs.jobs:
     st.warning("No job data available for the selected runs.")
     st.stop()
 
-df_jobs = pd.DataFrame(all_jobs)
-df_jobs["posted"] = pd.to_datetime(df_jobs["posted"], errors="coerce")
+now = datetime.now(timezone.utc)
+pulpito = base_url()
+health = runs.cluster_health(jobs, now=now)
+window_label = f"{selected_branch} · {start_date:%Y-%m-%d} → {end_date:%Y-%m-%d}"
+if selected_sha:
+    window_label = f"{window_label} · {selected_sha}"
 
-filt_jobs = df_jobs[df_jobs["suite"].isin(selected_suites)].copy()
-if filt_jobs.empty:
-    st.warning("No job data matches the selected filters.")
-    st.stop()
+show_cluster_health(
+    health,
+    heading=f"Build health · {window_label}",
+    show_branch_chip=False,
+    show_worst_branch=False,
+)
+show_scope_caption(runs, jobs, loaded_at=loaded_at, now=now)
 
-color_map = {
-    "pass":    "#54b399",
-    "fail":    "#d36086",
-    "dead":    "#aa6556",
-    "running": "#6092c0",
-    "queued":  "#d6bf57",
-    "unknown": "#9170b8",
-}
+tab_attention, tab_mix, tab_runs = st.tabs(
+    ["Needs attention", "Job mix", "Runs"]
+)
 
-_status_colors = {
-    "pass":    "background-color: #54b399; color: white",
-    "fail":    "background-color: #d36086; color: white",
-    "dead":    "background-color: #aa6556; color: white",
-    "running": "background-color: #6092c0; color: white",
-    "queued":  "background-color: #d6bf57; color: white",
-    "unknown": "background-color: #9170b8; color: white",
-}
-
-
-def _row_color(row):
-    style = _status_colors.get(row.get("status", ""), "")
-    return [style] * len(row)
-
-
-total_runs = len(filt_runs)
-total_jobs = len(filt_jobs)
-passed = int((filt_jobs["status"] == "pass").sum())
-failed = int((filt_jobs["status"].isin(["fail", "dead"])).sum())
-pass_rate = round(passed / total_jobs * 100, 1) if total_jobs else 0.0
-fail_rate = round(failed / total_jobs * 100, 1) if total_jobs else 0.0
-
-st.subheader(f"{selected_branch} — Health Scorecard")
-s1, s2, s3, s4 = st.columns(4)
-s1.metric("Total Runs", total_runs)
-s2.metric("Total Jobs", total_jobs)
-s3.metric("Pass Rate", f"{pass_rate}%")
-s4.metric("Fail Rate", f"{fail_rate}%")
-
-sha_ids = filt_runs["sha_id"].fillna("unknown").replace("", "unknown").unique().tolist()
-if len(sha_ids) > 1:
+with tab_attention:
+    st.subheader("Daily trend")
+    show_daily_trends(jobs)
     st.divider()
-    st.subheader("Per-SHA Comparison")
+    st.subheader("Needs attention")
+    show_needs_attention(
+        runs,
+        jobs,
+        pulpito,
+        source="builds",
+        show_worst_branches=False,
+    )
 
-    sha_job_stats = []
-    for sha in sha_ids:
-        sha_run_names = filt_runs[filt_runs["sha_id"] == sha]["name"].tolist()
-        sha_jobs = filt_jobs[filt_jobs["run_name"].isin(sha_run_names)]
-        sha_total = len(sha_jobs)
-        sha_passed = int((sha_jobs["status"] == "pass").sum())
-        sha_failed = int(sha_jobs["status"].isin(["fail", "dead"]).sum())
-        sha_job_stats.append({
-            "sha": sha[:8],
-            "runs": len(sha_run_names),
-            "jobs": sha_total,
-            "passed": sha_passed,
-            "failed": sha_failed,
-            "pass_rate": round(sha_passed / sha_total * 100, 1) if sha_total else 0.0,
-        })
-
-    sha_stats_df = pd.DataFrame(sha_job_stats)
-
-    fig_sha = px.bar(
-        sha_stats_df,
-        x="sha",
-        y=["passed", "failed"],
-        color_discrete_map={"passed": color_map["pass"], "failed": color_map["fail"]},
-        barmode="stack",
-        text_auto=True,
+with tab_mix:
+    show_job_mix(jobs)
+    st.divider()
+    st.subheader("Per-SHA comparison")
+    if selected_sha:
+        st.caption(f"Filtered to SHA **{selected_sha}**.")
+    show_sha_results(
+        jobs,
         title=f"Pass / Fail per SHA — {selected_branch}",
-        labels={"sha": "Commit SHA", "value": "Jobs", "variable": "Result"},
-    )
-    fig_sha.update_layout(height=380, legend_title_text="Result")
-    st.plotly_chart(fig_sha, width="stretch")
-
-    st.dataframe(
-        sha_stats_df.rename(columns={
-            "sha": "SHA", "runs": "Runs", "jobs": "Jobs",
-            "passed": "Passed", "failed": "Failed", "pass_rate": "Pass Rate (%)",
-        }),
-        width="stretch",
-        hide_index=True,
+        show_table=True,
     )
 
-st.divider()
-
-st.subheader(f"Completed Runs ({total_runs})")
-
-pulpito_base = get_pulpito_url()
-if pulpito_base:
-    pulpito_base = pulpito_base.rstrip("/")
-
-runs_display = filt_runs.copy()
-if "cloud_platform" in runs_display.columns:
-    runs_display.rename(columns={"cloud_platform": "machine_type"}, inplace=True)
-
-if "started" in runs_display.columns and "updated" in runs_display.columns:
-    runs_display["started"] = pd.to_datetime(runs_display["started"], errors="coerce")
-    runs_display["updated"] = pd.to_datetime(runs_display["updated"], errors="coerce")
-    runtime = runs_display["updated"] - runs_display["started"]
-
-    def _fmt_runtime(td):
-        if pd.isna(td):
-            return "—"
-        secs = td.total_seconds()
-        if secs <= 0:
-            return "—"
-        return f"{int(secs // 3600)}h {int((secs % 3600) // 60)}m"
-
-    runs_display["runtime"] = runtime.apply(_fmt_runtime)
-
-if "sha_id" in runs_display.columns:
-    runs_display["sha_id"] = runs_display["sha_id"].fillna("").apply(lambda s: s[:8])
-
-if pulpito_base and "name" in runs_display.columns:
-    runs_display["name"] = runs_display["name"].apply(
-        lambda n: f"{pulpito_base}/{n}/"
+with tab_runs:
+    st.subheader("Active runs")
+    show_active_runs(runs, pulpito, now=now, collapse_table=True)
+    st.divider()
+    by_posted = sorted(
+        runs.testruns,
+        key=lambda run: as_utc(run.posted)
+        or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
     )
-
-runs_cols_order = [
-    "name", "status", "suite", "sha_id", "user", "machine_type",
-    "total_jobs", "runtime", "posted",
-]
-runs_display_cols = [c for c in runs_cols_order if c in runs_display.columns]
-
-runs_col_config: dict = {}
-if pulpito_base:
-    runs_col_config["name"] = st.column_config.LinkColumn(
-        label="Run", display_text=r"([^/]+)/$",
+    ordered = sorted(
+        by_posted,
+        key=lambda run: run.sha_short or "",
+        reverse=True,
     )
-
-sort_cols = ["sha_id", "posted"] if "sha_id" in runs_display_cols else ["posted"]
-runs_table = (
-    runs_display[runs_display_cols]
-    .sort_values(sort_cols, ascending=[False, False] if len(sort_cols) == 2 else [False])
-    .reset_index(drop=True)
-)
-runs_table_height = min(800, 38 + len(runs_table) * 35)
-st.dataframe(
-    runs_table.style.apply(_row_color, axis=1),
-    column_config=runs_col_config,
-    width="stretch",
-    height=runs_table_height,
-    hide_index=True,
-)
-
-st.divider()
-
-st.subheader("Suite Health")
-
-suite_status = (
-    filt_jobs.groupby(["suite", "status"])
-    .size()
-    .reset_index(name="count")
-)
-suite_totals = suite_status.groupby("suite")["count"].transform("sum")
-suite_status["percentage"] = (suite_status["count"] / suite_totals * 100).round(1)
-
-chart_title = f"Suite Health — {selected_branch}"
-
-fig_suite = px.bar(
-    suite_status,
-    x="suite",
-    y="percentage",
-    color="status",
-    color_discrete_map=color_map,
-    barmode="stack",
-    title=chart_title,
-    labels={"suite": "Suite", "percentage": "Percentage (%)", "status": "Status"},
-)
-fig_suite.update_layout(height=400, legend_title_text="Status", yaxis_range=[0, 105])
-st.plotly_chart(fig_suite, width="stretch")
-
-st.divider()
-
-st.subheader("OS-wise Job Distribution")
-
-os_jobs = filt_jobs[filt_jobs["os_type"].notna() & (filt_jobs["os_type"] != "")].copy()
-if os_jobs.empty:
-    st.info("No OS type information available in the current job data.")
-else:
-    os_list = sorted(os_jobs["os_type"].unique())
-    pie_cols = st.columns(min(len(os_list), 3))
-    for idx, os_name in enumerate(os_list):
-        os_slice = os_jobs[os_jobs["os_type"] == os_name]
-        status_counts = os_slice["status"].value_counts().reset_index()
-        status_counts.columns = ["status", "count"]
-        colors = [color_map.get(s, "#999") for s in status_counts["status"]]
-
-        fig_pie = go.Figure(go.Pie(
-            labels=status_counts["status"].str.capitalize(),
-            values=status_counts["count"],
-            marker=dict(colors=colors),
-            hole=0.4,
-            textinfo="percent+label",
-            textposition="inside",
-        ))
-        fig_pie.update_layout(
-            title=dict(text=os_name, x=0.5),
-            height=300,
-            margin=dict(l=10, r=10, t=40, b=10),
-            showlegend=False,
-        )
-        with pie_cols[idx % len(pie_cols)]:
-            st.plotly_chart(fig_pie, width="stretch")
-
-st.divider()
-
-st.subheader("Top Failure Reasons")
-
-failing_jobs = filt_jobs[filt_jobs["status"].isin(["fail", "dead"])]
-if failing_jobs.empty:
-    st.info("No failing jobs found for the selected filters.")
-else:
-    failure_reasons = failing_jobs.copy()
-    failure_reasons["failure_reason"] = (
-        failure_reasons["failure_template"]
-        .fillna("Unknown failure")
-        .replace("", "Unknown failure")
+    show_status_filtered_runs(
+        ordered,
+        pulpito,
+        prefix="builds",
+        columns=_BUILD_RUN_COLUMNS,
+        heading="Runs",
     )
-    failure_summary = failure_reasons.groupby("failure_reason").agg(
-        jobs_impacted=("job_id", "count"),
-        runs_impacted=("run_name", "nunique"),
-    ).reset_index()
-    failure_summary["share"] = (
-        failure_summary["jobs_impacted"]
-        / failure_summary["jobs_impacted"].sum()
-        * 100
-    ).round(1)
-    failure_summary = failure_summary.sort_values(
-        ["jobs_impacted", "runs_impacted", "failure_reason"],
-        ascending=[False, False, True],
-    ).head(10)
-
-    display_failures = failure_summary.rename(
-        columns={
-            "failure_reason": "Failure Reason",
-            "jobs_impacted": "Jobs Impacted",
-            "runs_impacted": "Runs Impacted",
-            "share": "Share (%)",
-        }
-    ).reset_index(drop=True)
-
-    event = st.dataframe(
-        display_failures,
-        width="stretch",
-        hide_index=True,
-        on_select="rerun",
-        selection_mode="single-row",
-    )
-
-    selected_rows = event.selection.rows
-    if selected_rows:
-        row_idx = selected_rows[0]
-        selected_reason = failure_summary.iloc[row_idx]["failure_reason"]
-        jobs_count = int(failure_summary.iloc[row_idx]["jobs_impacted"])
-        runs_count = int(failure_summary.iloc[row_idx]["runs_impacted"])
-
-        normalised_reasons = (
-            df_jobs["failure_template"]
-            .fillna("Unknown failure")
-            .replace("", "Unknown failure")
-        )
-        failing_for_reason = df_jobs[
-            df_jobs["status"].isin(["fail", "dead"])
-            & normalised_reasons.eq(selected_reason)
-        ]
-        impacted_run_names = failing_for_reason["run_name"].unique().tolist()
-
-        impacted_runs_df = filt_runs[filt_runs["name"].isin(impacted_run_names)]
-        impacted_runs_records = impacted_runs_df.to_dict("records")
-
-        col_j, col_r = st.columns(2)
-        with col_j:
-            if st.button(f"View {jobs_count} Impacted Jobs →"):
-                st.session_state["drill_run_names"] = impacted_run_names
-                st.switch_page(
-                    "pages/dashboard/jobs.py",
-                    query_params={"failure_reason": selected_reason, "source": "builds"},
-                )
-        with col_r:
-            if st.button(f"View {runs_count} Impacted Runs →"):
-                st.session_state["drill_run_names"] = impacted_run_names
-                st.session_state["drill_run_records"] = impacted_runs_records
-                st.switch_page(
-                    "pages/dashboard/testruns.py",
-                    query_params={"failure_reason": selected_reason, "source": "builds"},
-                )

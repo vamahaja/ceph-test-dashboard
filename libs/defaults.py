@@ -26,6 +26,7 @@ DEFAULT_NIGHTLY_RUN_USER = "jenkins-build"
 DEFAULT_REPORT_COUNT = 100
 DEFAULT_RUN_PAGE_SIZE = 100
 DEFAULT_RUN_MAX_PAGES = 500
+DEFAULT_JOB_FETCH_WORKERS = 8
 
 # Cluster health thresholds (completed-job %)
 DEFAULT_HEALTH_PASS_CRITICAL = 50.0
@@ -47,8 +48,12 @@ DEFAULT_TOP_ACTIVE_TESTRUNS = 12
 DEFAULT_FLAKY_MIN_EXECUTIONS = 3
 DEFAULT_FAILURE_REASON_MAX_LEN = 80
 
-# Overview incremental refresh (last N minutes of runs/jobs)
-DEFAULT_OVERVIEW_REFRESH_MINUTES = 60
+# Incremental refresh for Overview / report pages (last N minutes)
+DEFAULT_REFRESH_MINUTES = 60
+DEFAULT_OVERVIEW_REFRESH_MINUTES = DEFAULT_REFRESH_MINUTES
+
+# Stable branches shown on the Releases report
+DEFAULT_RELEASE_BRANCHES = ("tentacle", "squid", "umbrella")
 
 # Infra / machine-error reasons used by the hardware report
 DEFAULT_MACHINE_ERROR_PATTERN = (
