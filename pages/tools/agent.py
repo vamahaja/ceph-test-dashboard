@@ -1,15 +1,15 @@
 import streamlit as st
 
 st.markdown(
-    "<h1 style='text-align: center;'>Search</h1>",
+    "<h1 style='text-align: center;'>Agent</h1>",
     unsafe_allow_html=True,
 )
 
 st.markdown(
     """
     <div style="text-align: center; margin-top: 5rem;">
-      <div style="font-size: 6rem; line-height: 1; filter: drop-shadow(0 0 18px #a78bfa);">
-        🔮
+      <div style="font-size: 6rem; line-height: 1; filter: drop-shadow(0 0 18px #22d3ee);">
+        🤖
       </div>
       <div style="
         display: inline-block;

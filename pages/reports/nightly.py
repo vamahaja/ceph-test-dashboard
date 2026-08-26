@@ -27,7 +27,7 @@ from libs.views import (
     sync_query_params,
 )
 
-_NIGHTLY_RUN_COLUMNS = (
+NIGHTLY_RUN_COLUMNS = (
     "scheduled_date",
     "name",
     "branch",
@@ -181,6 +181,6 @@ with tab_runs:
         ordered,
         pulpito,
         prefix="nightly",
-        columns=_NIGHTLY_RUN_COLUMNS,
+        columns=NIGHTLY_RUN_COLUMNS,
         heading="Nightly runs",
     )

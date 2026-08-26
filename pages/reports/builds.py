@@ -28,7 +28,7 @@ from libs.views import (
     sync_query_params,
 )
 
-_BUILD_RUN_COLUMNS = (
+BUILD_RUN_COLUMNS = (
     "name",
     "status",
     "suite",
@@ -184,6 +184,6 @@ with tab_runs:
         ordered,
         pulpito,
         prefix="builds",
-        columns=_BUILD_RUN_COLUMNS,
+        columns=BUILD_RUN_COLUMNS,
         heading="Runs",
     )

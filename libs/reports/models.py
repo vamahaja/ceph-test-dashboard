@@ -8,7 +8,6 @@ from libs.defaults import (
     STATUS_ACTIVE,
     STATUS_ALERTING,
     STATUS_COMPLETED,
-    STATUS_FAILING,
 )
 
 
@@ -88,14 +87,6 @@ class Job:
     def sha_short(self) -> str:
         return (self.sha1 or "")[:8]
 
-    @property
-    def is_completed(self) -> bool:
-        return self.status in STATUS_COMPLETED
-
-    @property
-    def is_failing(self) -> bool:
-        return self.status in STATUS_FAILING
-
 
 @dataclass
 class TestRun:
@@ -120,13 +111,6 @@ class TestRun:
     @property
     def sha_short(self) -> str:
         return (self.sha_id or "")[:8]
-
-    @property
-    def fail_pct(self) -> float:
-        total = self.results.total
-        if not total:
-            return 0.0
-        return self.results.failed / total * 100
 
     @property
     def is_completed(self) -> bool:
@@ -160,24 +144,6 @@ class TestRunsSummary:
 
 
 @dataclass
-class OsSummary:
-    os_type: str = ""
-    cnt_jobs: int = 0
-    cnt_pass: int = 0
-    cnt_fail: int = 0
-    cnt_dead: int = 0
-    cnt_running: int = 0
-    cnt_queued: int = 0
-    cnt_waiting: int = 0
-    pct_pass: float = 0.0
-    pct_fail: float = 0.0
-    pct_dead: float = 0.0
-    pct_running: float = 0.0
-    pct_queued: float = 0.0
-    pct_waiting: float = 0.0
-
-
-@dataclass
 class FailureReasonStat:
     """Aggregate count for a single job failure reason."""
 
@@ -188,19 +154,6 @@ class FailureReasonStat:
     branches_impacted: int = 0
     suites_impacted: int = 0
     tests_impacted: int = 0
-
-
-@dataclass
-class FailedTestRunStat:
-    """Compact top-failure row for Streamlit tables and LLM tools."""
-
-    name: str = ""
-    branch: str = ""
-    suite: str = ""
-    status: str = ""
-    user: str = ""
-    fail_pct: float = 0.0
-    results: Results = field(default_factory=Results)
 
 
 @dataclass
@@ -338,17 +291,6 @@ class FlakyTestStat:
     branches_affected: int = 0
     same_sha_flaky: int = 0
     total_shas: int = 0
-
-
-@dataclass
-class NightlyRunSummary:
-    """Nightly report KPI bundle."""
-
-    cnt_runs: int = 0
-    cnt_alerting: int = 0
-    cnt_completed: int = 0
-    cnt_pass: int = 0
-    pct_runs_passed: float = 0.0
 
 
 @dataclass

@@ -23,8 +23,8 @@ import streamlit as st
 from libs.config import get_pulpito_url
 from libs.exceptions import ConfigError
 
-_RUN_DISPLAY_TEXT = r"([^/]+)/$"
-_JOB_DISPLAY_TEXT = r"(\d+)$"
+RUN_DISPLAY_TEXT = r"([^/]+)/$"
+JOB_DISPLAY_TEXT = r"(\d+)$"
 
 
 def base_url() -> str | None:
@@ -68,7 +68,7 @@ def run_link_column(
     return {
         column: st.column_config.LinkColumn(
             label=label or column,
-            display_text=_RUN_DISPLAY_TEXT,
+            display_text=RUN_DISPLAY_TEXT,
         )
     }
 
@@ -86,6 +86,6 @@ def job_link_column(
     return {
         column: st.column_config.LinkColumn(
             label=label or column,
-            display_text=_JOB_DISPLAY_TEXT,
+            display_text=JOB_DISPLAY_TEXT,
         )
     }

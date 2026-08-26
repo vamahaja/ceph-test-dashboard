@@ -48,22 +48,8 @@ class CatalogSnapshot(NamedTuple):
     generation: int
 
 
-def refresh_every() -> timedelta:
-    """Configured background refresh interval."""
-    return timedelta(minutes=get_refresh_minutes())
-
-
-def refresh_seconds() -> int:
-    """Refresh interval in seconds (for ``@st.cache_data`` TTLs)."""
-    return get_refresh_minutes() * 60
-
-
 def utc_day_start(day: date) -> datetime:
     return datetime(day.year, day.month, day.day, tzinfo=timezone.utc)
-
-
-def utc_day_end_exclusive(day: date) -> datetime:
-    return utc_day_start(day) + timedelta(days=1)
 
 
 def catalog_keep_since(now: datetime | None = None) -> datetime:
@@ -97,11 +83,6 @@ def catalog_is_ready() -> bool:
         return bool(_state["ready"])
 
 
-def catalog_is_refreshing() -> bool:
-    with _lock:
-        return bool(_state["refreshing"])
-
-
 def catalog_error() -> str | None:
     with _lock:
         err = _state["error"]
@@ -120,11 +101,6 @@ def catalog_progress() -> tuple[str, list[str]]:
 def catalog_generation() -> int:
     with _lock:
         return int(_state["generation"] or 0)
-
-
-def catalog_loaded_at() -> datetime | None:
-    with _lock:
-        return _state["loaded_at"]
 
 
 def get_catalog() -> CatalogSnapshot:

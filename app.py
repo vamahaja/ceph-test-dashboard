@@ -68,15 +68,15 @@ search = st.Page(
     title="Search",
     icon=":material/search:"
 )
-history = st.Page(
-    "pages/tools/history.py",
-    title="History",
-    icon=":material/history:"
-)
 alerts = st.Page(
     "pages/tools/alerts.py",
     title="Alerts",
     icon=":material/notification_important:"
+)
+agent = st.Page(
+    "pages/tools/agent.py",
+    title="Agent",
+    icon=":material/smart_toy:"
 )
 
 # Set navigations
@@ -84,7 +84,7 @@ pg = st.navigation(
     {
         "Dashboard": [overview, testruns, jobs],
         "Reports": [release, nightly, builds, coverage, hardware],
-        "Tools": [search, history, alerts],
+        "Tools": [search, alerts, agent],
     }
 )
 

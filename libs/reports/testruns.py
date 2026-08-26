@@ -12,23 +12,17 @@ from libs.defaults import (
     DEFAULT_REPORT_COUNT,
     DEFAULT_RUN_MAX_PAGES,
     DEFAULT_RUN_PAGE_SIZE,
-    DEFAULT_TOP_ACTIVE_TESTRUNS,
 )
 from libs.reports import DataSource
 from libs.reports.models import (
     ActiveRunsSummary,
     BranchSummary,
     ClusterHealthSnapshot,
-    DailyTrend,
-    FailedTestRunStat,
-    NightlyRunSummary,
     Results,
-    ShaSummary,
-    SuiteTrend,
     TestRun,
     TestRunsSummary,
 )
-from libs.reports.parsing import as_run_list, as_run_record, to_failed_stat, to_testrun
+from libs.reports.parsing import as_run_list, as_run_record, to_testrun
 from libs.reports.utils import (
     as_date,
     as_utc,
@@ -178,79 +172,6 @@ class TestRunsStats(DataSource):
         return cls.from_testruns(collected)
 
     @classmethod
-    def posted_between(
-        cls,
-        date_start: date,
-        date_end: date,
-        *,
-        branch: str = "",
-        page_size: int = DEFAULT_RUN_PAGE_SIZE,
-        max_pages: int = DEFAULT_RUN_MAX_PAGES,
-    ) -> TestRunsStats:
-        """Page runs whose ``posted`` calendar day is in ``[date_start, date_end]``."""
-        start = datetime(
-            date_start.year, date_start.month, date_start.day, tzinfo=timezone.utc
-        )
-        until = datetime(
-            date_end.year, date_end.month, date_end.day, tzinfo=timezone.utc
-        ) + timedelta(days=1)
-        return cls.since(
-            start,
-            branch=branch,
-            until=until,
-            page_size=page_size,
-            max_pages=max_pages,
-        )
-
-    @classmethod
-    def for_scheduled_window(
-        cls,
-        date_start: date,
-        date_end: date,
-        *,
-        user: str = "",
-        page_size: int = DEFAULT_RUN_PAGE_SIZE,
-        max_pages: int = DEFAULT_RUN_MAX_PAGES,
-    ) -> TestRunsStats:
-        """Page runs whose scheduled (else posted) day is in ``[date_start, date_end]``.
-
-        Optional ``user`` is passed to the API (nightly owner filter).
-        """
-        client = cls.from_testruns([])
-        collected: list[TestRun] = []
-        page = 1
-        while page <= max_pages:
-            raw = client.run(
-                user=user or None,
-                date_start=date_start.isoformat(),
-                date_end=date_end.isoformat(),
-                count=page_size,
-                page=page,
-            )
-            items = as_run_list(raw)
-            if not items:
-                break
-            collected.extend(to_testrun(item) for item in items)
-            if len(items) < page_size:
-                break
-            page += 1
-
-        collected = _filter_testruns_by_date(
-            collected,
-            date_start=date_start,
-            date_end=date_end,
-        )
-        if user:
-            collected = [
-                run
-                for run in collected
-                if run.user == user and run.scheduled is not None
-            ]
-        else:
-            collected = [run for run in collected if run.scheduled is not None]
-        return cls.from_testruns(collected)
-
-    @classmethod
     def from_records(cls, records: list[dict]) -> TestRunsStats:
         """Build stats from raw run dicts (nightly/builds drill-in)."""
         return cls.from_testruns(
@@ -260,11 +181,6 @@ class TestRunsStats(DataSource):
     @property
     def distinct_status_count(self) -> int:
         return len({t.status for t in self.testruns if t.status})
-
-    @cached_property
-    def testrun(self) -> TestRun | None:
-        """Return the first (or only) testrun, if any."""
-        return self.testruns[0] if self.testruns else None
 
     @cached_property
     def testrun_names(self) -> list[str]:
@@ -287,10 +203,6 @@ class TestRunsStats(DataSource):
             self.active_testruns,
             key=lambda t: as_utc(t.posted) or aware_max,
         )
-
-    def oldest_active_testruns(self, n: int = DEFAULT_TOP_ACTIVE_TESTRUNS) -> list[TestRun]:
-        """Oldest ``n`` active testruns."""
-        return self.ranked_active_testruns()[:n]
 
     def stuck_testruns(
         self,
@@ -465,16 +377,6 @@ class TestRunsStats(DataSource):
             oldest_age=format_age(oldest, now),
         )
 
-    @cached_property
-    def alerting_testruns(self) -> list[TestRun]:
-        """Nightly-style alerting set: fail/dead/queued/running."""
-        return [t for t in self.testruns if t.is_alerting]
-
-    @cached_property
-    def nightly_testruns(self) -> list[TestRun]:
-        """Runs that have a scheduled timestamp (nightly candidates)."""
-        return [t for t in self.testruns if t.scheduled is not None]
-
     def filtered(
         self,
         *,
@@ -526,10 +428,6 @@ class TestRunsStats(DataSource):
             rows = filtered_rows
         return rows
 
-    def nightly_scoped(self, user: str) -> list[TestRun]:
-        """Nightly report scope: ``user`` + scheduled timestamp present."""
-        return self.filtered(user=user, scheduled_only=True)
-
     @cached_property
     def summary(self) -> TestRunsSummary:
         """Aggregate pass/fail/dead counts for the loaded testruns."""
@@ -554,22 +452,6 @@ class TestRunsStats(DataSource):
             summary.pct_waiting = pct(summary.cnt_waiting, total)
             summary.pct_queued = pct(summary.cnt_queued, total)
         return summary
-
-    @cached_property
-    def nightly_summary(self) -> NightlyRunSummary:
-        """KPI bundle matching the nightly report scorecard."""
-        runs = self.nightly_testruns or self.testruns
-        cnt_runs = len(runs)
-        cnt_alerting = sum(1 for t in runs if t.is_alerting)
-        cnt_completed = sum(1 for t in runs if t.is_completed)
-        cnt_pass = sum(1 for t in runs if t.status == "pass")
-        return NightlyRunSummary(
-            cnt_runs=cnt_runs,
-            cnt_alerting=cnt_alerting,
-            cnt_completed=cnt_completed,
-            cnt_pass=cnt_pass,
-            pct_runs_passed=round(pct(cnt_pass, cnt_runs), 1),
-        )
 
     @cached_property
     def summary_by_branch(self) -> list[BranchSummary]:
@@ -604,99 +486,3 @@ class TestRunsStats(DataSource):
                 )
             )
         return sorted(rows, key=lambda r: r.pct_fail, reverse=True)
-
-    @cached_property
-    def sha_summaries(self) -> list[ShaSummary]:
-        """Per-SHA run counts and embedded job result totals."""
-        by_sha: dict[str, list[TestRun]] = defaultdict(list)
-        for t in self.testruns:
-            by_sha[t.sha_id or "unknown"].append(t)
-
-        rows: list[ShaSummary] = []
-        for sha, runs in by_sha.items():
-            results = Results()
-            for t in runs:
-                r = t.results
-                results.pass_ += r.pass_
-                results.fail += r.fail
-                results.dead += r.dead
-                results.running += r.running
-                results.waiting += r.waiting
-                results.queued += r.queued
-            cnt_jobs = results.total
-            cnt_pass = results.pass_
-            cnt_fail = results.failed
-            rows.append(
-                ShaSummary(
-                    sha1=sha,
-                    sha_short=sha[:8],
-                    cnt_runs=len(runs),
-                    cnt_jobs=cnt_jobs,
-                    cnt_pass=cnt_pass,
-                    cnt_fail=cnt_fail,
-                    pct_pass=round(pct(cnt_pass, cnt_jobs), 1),
-                )
-            )
-        return sorted(rows, key=lambda r: r.pct_pass)
-
-    @cached_property
-    def top_10_failed_testruns(self) -> list[FailedTestRunStat]:
-        """Top 10 testruns ranked by failure percentage (fail+dead)."""
-        ranked = sorted(
-            self.testruns,
-            key=lambda t: t.fail_pct,
-            reverse=True,
-        )[:10]
-        return [to_failed_stat(t) for t in ranked]
-
-    @cached_property
-    def trends_by_suite(self) -> list[SuiteTrend]:
-        """Pass/fail aggregates grouped by suite."""
-        by_suite: dict[str, Results] = {}
-        for t in self.testruns:
-            suite = t.suite or "unknown"
-            if suite not in by_suite:
-                by_suite[suite] = Results()
-            by_suite[suite].pass_ += t.results.pass_
-            by_suite[suite].fail += t.results.fail
-            by_suite[suite].dead += t.results.dead
-            by_suite[suite].running += t.results.running
-            by_suite[suite].waiting += t.results.waiting
-            by_suite[suite].queued += t.results.queued
-        return [
-            SuiteTrend(suite=suite, results=results)
-            for suite, results in by_suite.items()
-        ]
-
-    def _daily_trends(self, *, on: str) -> list[DailyTrend]:
-        by_day: dict[date, Results] = {}
-        for t in self.testruns:
-            ts = getattr(t, on, None)
-            if ts is None:
-                continue
-            day = ts.date() if isinstance(ts, datetime) else ts
-            if day not in by_day:
-                by_day[day] = Results()
-            by_day[day].pass_ += t.results.pass_
-            by_day[day].fail += t.results.fail
-            by_day[day].dead += t.results.dead
-            by_day[day].running += t.results.running
-            by_day[day].waiting += t.results.waiting
-            by_day[day].queued += t.results.queued
-        return [
-            DailyTrend(day=day, results=results)
-            for day, results in sorted(
-                by_day.items(),
-                key=lambda item: item[0],
-            )
-        ]
-
-    @cached_property
-    def daily_trends(self) -> list[DailyTrend]:
-        """Pass/fail aggregates grouped by started date."""
-        return self._daily_trends(on="started")
-
-    @cached_property
-    def daily_trends_by_posted(self) -> list[DailyTrend]:
-        """Pass/fail aggregates by posted date (UI charts)."""
-        return self._daily_trends(on="posted")

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from libs.defaults import DEFAULT_FAILURE_REASON_MAX_LEN
-from libs.reports.models import FailedTestRunStat, Job, Results, TestRun
+from libs.reports.models import Job, Results, TestRun
 from libs.reports.utils import to_datetime
 
 
@@ -88,18 +88,6 @@ def as_run_record(testrun: TestRun) -> dict:
             "queued": testrun.results.queued,
         },
     }
-
-
-def to_failed_stat(testrun: TestRun) -> FailedTestRunStat:
-    return FailedTestRunStat(
-        name=testrun.name,
-        branch=testrun.branch,
-        suite=testrun.suite,
-        status=testrun.status,
-        user=testrun.user,
-        fail_pct=round(testrun.fail_pct, 2),
-        results=testrun.results,
-    )
 
 
 def _to_job_id(value) -> int:

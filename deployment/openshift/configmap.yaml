@@ -19,14 +19,10 @@ data:
     run_user = ${NIGHTLY_RUN_USER}
 
     [cache]
-    ttl = ${CACHE_TTL}
     refresh_minutes = 60
 
     [release]
     branches = main, umbrella, tentacle, squid
 
     [hardware]
-    run_scan = 200
-    max_runs = 30
     min_runs = 2
-    days_window = 7

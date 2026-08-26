@@ -38,10 +38,10 @@ from libs.views import (
     sync_query_params,
 )
 
-_HW = get_hardware_config()
-_MIN_RUNS = _HW["min_runs"]
+HW = get_hardware_config()
+MIN_RUNS = HW["min_runs"]
 
-_HW_RUN_COLUMNS = (
+HW_RUN_COLUMNS = (
     "name",
     "status",
     "branch",
@@ -281,7 +281,7 @@ show_scope_caption(runs, jobs, loaded_at=loaded_at, now=now)
 st.caption(f"Architecture **{arch_label}**.")
 
 n_runs = len(runs.testruns)
-if n_runs < _MIN_RUNS:
+if n_runs < MIN_RUNS:
     st.warning(
         f"Only **{n_runs} run{'s' if n_runs != 1 else ''}** found for "
         f"**{selected_mt}** in this window — statistics may not be reliable. "
@@ -478,6 +478,6 @@ with tab_runs:
         ordered,
         pulpito,
         prefix="hardware",
-        columns=_HW_RUN_COLUMNS,
+        columns=HW_RUN_COLUMNS,
         heading="Runs",
     )

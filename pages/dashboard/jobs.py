@@ -20,7 +20,7 @@ from libs.reports.models import Job, JobsSummary
 from libs.reports.testruns import TestRunsStats
 from libs.reports.utils import format_duration
 
-_JOB_COLUMNS = (
+JOB_COLUMNS = (
     "job_id",
     "status",
     "description",
@@ -34,7 +34,7 @@ _JOB_COLUMNS = (
     "posted",
 )
 
-_DRILL_COLUMNS = (
+DRILL_COLUMNS = (
     "job_id",
     "run_name",
     "status",
@@ -204,7 +204,7 @@ if failure_filter:
             )
 
     st.divider()
-    _show_jobs_table(matching, pulpito, _DRILL_COLUMNS, include_run=True)
+    _show_jobs_table(matching, pulpito, DRILL_COLUMNS, include_run=True)
 
 elif run_filter:
     st.info(f"Showing jobs for run `{run_filter}`")
@@ -242,7 +242,7 @@ elif run_filter:
     _show_jobs_table(
         jobs,
         pulpito,
-        _JOB_COLUMNS,
+        JOB_COLUMNS,
         default_run=run_filter,
         include_run=False,
     )
@@ -296,7 +296,7 @@ else:
     _show_jobs_table(
         stats.jobs,
         pulpito,
-        _JOB_COLUMNS,
+        JOB_COLUMNS,
         default_run=selected_run,
         include_run=False,
     )

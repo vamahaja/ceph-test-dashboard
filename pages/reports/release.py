@@ -28,7 +28,7 @@ from libs.views import (
     sync_query_params,
 )
 
-_RELEASE_RUN_COLUMNS = (
+RELEASE_RUN_COLUMNS = (
     "name",
     "status",
     "suite",
@@ -168,6 +168,6 @@ with tab_runs:
         ordered,
         pulpito,
         prefix="release",
-        columns=_RELEASE_RUN_COLUMNS,
+        columns=RELEASE_RUN_COLUMNS,
         heading="Runs",
     )

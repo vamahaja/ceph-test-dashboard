@@ -15,7 +15,7 @@ from libs.reports.models import TestRun
 from libs.reports.testruns import TestRunsStats
 from libs.reports.utils import format_age
 
-_RUN_COLUMNS = (
+RUN_COLUMNS = (
     "name",
     "status",
     "branch",
@@ -69,7 +69,7 @@ def _runs_frame(
             }
             for run in runs
         ],
-        columns=list(_RUN_COLUMNS),
+        columns=list(RUN_COLUMNS),
     )
 
 

@@ -39,7 +39,6 @@ See [`openshift/README.md`](openshift/README.md) for the full OpenShift flow (`d
     run_user = jenkins-build
 
     [cache]
-    ttl = 3600
     # Report snapshots are shared across sessions for this many minutes.
     refresh_minutes = 60
 
