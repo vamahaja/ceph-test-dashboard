@@ -11,7 +11,8 @@ run_user = jenkins-build
 
 [cache]
 ttl = 3600
-# Report snapshots are shared across sessions for this many minutes.
+# Background catalog refresh interval in minutes, aligned to the UTC clock
+# (60 = every hour at :00).
 refresh_minutes = 60
 
 [release]

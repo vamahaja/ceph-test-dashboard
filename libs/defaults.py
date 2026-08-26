@@ -48,9 +48,10 @@ DEFAULT_TOP_ACTIVE_TESTRUNS = 12
 DEFAULT_FLAKY_MIN_EXECUTIONS = 3
 DEFAULT_FAILURE_REASON_MAX_LEN = 80
 
-# Incremental refresh for Overview / report pages (last N minutes)
+# Incremental / clock-aligned catalog refresh
 DEFAULT_REFRESH_MINUTES = 60
 DEFAULT_OVERVIEW_REFRESH_MINUTES = DEFAULT_REFRESH_MINUTES
+DEFAULT_CATALOG_DAYS = 30
 
 # Branches shown on the Releases report
 DEFAULT_RELEASE_BRANCHES = ("main", "umbrella", "tentacle", "squid")

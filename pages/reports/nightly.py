@@ -2,21 +2,14 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 
 import streamlit as st
 
 from libs.config import get_nightly_run_user
 from libs.defaults import STATUS_FAILING
-from libs.exceptions import ConfigError, PaddlesAPIError
 from libs.pulpito import base_url
-from libs.refresh import (
-    ensure_payload,
-    new_store,
-    patch_due,
-    refresh_every,
-    utc_day_start,
-)
+from libs.refresh import get_catalog
 from libs.reports.jobs import JobsStats
 from libs.reports.testruns import TestRunsStats
 from libs.reports.utils import as_utc
@@ -46,16 +39,6 @@ _NIGHTLY_RUN_COLUMNS = (
 )
 
 
-@st.cache_resource
-def _nightly_runs_store() -> dict:
-    return new_store()
-
-
-@st.cache_resource
-def _nightly_jobs_store() -> dict:
-    return new_store()
-
-
 def _nightly_run_scope(rows, user: str, start: date, end: date, branch: str = ""):
     scoped = TestRunsStats.from_testruns(rows).filtered(
         date_start=start,
@@ -67,83 +50,6 @@ def _nightly_run_scope(rows, user: str, start: date, end: date, branch: str = ""
     if branch:
         scoped = [run for run in scoped if run.branch == branch]
     return scoped
-
-
-def _ensure_nightly_runs(user: str, start: date, end: date):
-    """Load scheduled nightly runs for the window (no per-run job fetch)."""
-
-    def load_full():
-        runs = TestRunsStats.for_scheduled_window(start, end, user=user)
-        return runs.testruns, []
-
-    def load_recent(patch_since: datetime):
-        recent = TestRunsStats.since(patch_since, user=user)
-        scoped = [
-            run
-            for run in recent.testruns
-            if run.user == user and run.scheduled is not None
-        ]
-        return scoped, []
-
-    def trim_runs(rows):
-        return _nightly_run_scope(rows, user, start, end)
-
-    return ensure_payload(
-        _nightly_runs_store(),
-        key=(user, start.isoformat(), end.isoformat()),
-        load_full=load_full,
-        load_recent=load_recent,
-        keep_since=utc_day_start(start) - timedelta(days=2),
-        keep_until=None,
-        trim_runs=trim_runs,
-        spinner_full=f"Loading nightly runs for `{user}`…",
-    )
-
-
-def _ensure_nightly_jobs(
-    user: str,
-    start: date,
-    end: date,
-    branch: str,
-    testruns: list,
-):
-    """Fetch jobs only for the selected branch's nightly runs."""
-
-    def load_full():
-        jobs = JobsStats.for_testruns(testruns)
-        return testruns, jobs.jobs
-
-    def load_recent(patch_since: datetime):
-        recent = TestRunsStats.since(patch_since, user=user)
-        scoped = [
-            run
-            for run in recent.testruns
-            if run.user == user
-            and run.scheduled is not None
-            and run.branch == branch
-        ]
-        jobs = JobsStats.for_testruns(scoped)
-        return scoped, jobs.jobs
-
-    def trim_runs(rows):
-        return _nightly_run_scope(rows, user, start, end, branch=branch)
-
-    return ensure_payload(
-        _nightly_jobs_store(),
-        key=(user, start.isoformat(), end.isoformat(), branch),
-        load_full=load_full,
-        load_recent=load_recent,
-        keep_since=utc_day_start(start) - timedelta(days=2),
-        keep_until=None,
-        trim_runs=trim_runs,
-        spinner_full=f"Loading jobs for `{branch}`…",
-    )
-
-
-@st.fragment(run_every=refresh_every())
-def _periodic_nightly_refresh() -> None:
-    if patch_due(_nightly_runs_store()) or patch_due(_nightly_jobs_store()):
-        st.rerun()
 
 
 st.markdown(
@@ -161,14 +67,11 @@ nightly_user = get_nightly_run_user()
 time_window = sidebar_time_window(prefix="nightly")
 start_date, end_date = time_window.start, time_window.end
 
-try:
-    payload_runs, _, loaded_at = _ensure_nightly_runs(
-        nightly_user, start_date, end_date
-    )
-except (PaddlesAPIError, ConfigError) as exc:
-    st.warning(f"Could not load nightly data: {exc}")
-    st.stop()
-
+catalog = get_catalog()
+payload_runs = _nightly_run_scope(
+    catalog.runs, nightly_user, start_date, end_date
+)
+loaded_at = catalog.loaded_at
 all_runs = TestRunsStats.from_testruns(payload_runs)
 
 if not all_runs.testruns:
@@ -192,22 +95,7 @@ selected_suites = sidebar_suite_filter(
     reset_token=selected_branch,
 )
 
-try:
-    _, payload_jobs, jobs_loaded_at = _ensure_nightly_jobs(
-        nightly_user,
-        start_date,
-        end_date,
-        selected_branch,
-        branch_runs.testruns,
-    )
-except (PaddlesAPIError, ConfigError) as exc:
-    st.warning(f"Could not load nightly jobs: {exc}")
-    st.stop()
-
-_periodic_nightly_refresh()
-
-loaded_at = jobs_loaded_at or loaded_at
-all_jobs = JobsStats.from_jobs(payload_jobs)
+all_jobs = JobsStats.from_jobs(catalog.jobs)
 runs = branch_runs.for_suites(selected_suites)
 jobs = all_jobs.for_run_set(runs.testruns)
 
