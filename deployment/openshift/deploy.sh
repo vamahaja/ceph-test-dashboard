@@ -88,7 +88,6 @@ load_config() {
         PADDLES_BASE_URL
         PULPITO_BASE_URL
         NIGHTLY_RUN_USER
-        CACHE_TTL
     )
     for var in "${required[@]}"; do
         if [[ -z "${!var:-}" ]]; then

@@ -27,7 +27,7 @@ from libs.views import (
     sync_query_params,
 )
 
-_ACTIVE_TABLE_CAP = DEFAULT_TOP_ACTIVE_TESTRUNS
+ACTIVE_TABLE_CAP = DEFAULT_TOP_ACTIVE_TESTRUNS
 
 
 st.markdown(
@@ -84,7 +84,7 @@ with tab_attention:
     show_needs_attention(runs, jobs, pulpito, source="overview")
 
 with tab_active:
-    show_active_runs(runs, pulpito, now=now, cap=_ACTIVE_TABLE_CAP)
+    show_active_runs(runs, pulpito, now=now, cap=ACTIVE_TABLE_CAP)
 
 with tab_mix:
     show_job_mix(jobs)

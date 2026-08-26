@@ -98,7 +98,6 @@ Copy [dashboard.config.tmpl](dashboard.config.tmpl) to `dashboard.config`. The d
 | `PADDLES_BASE_URL` | Paddles API base URL written into the ConfigMap |
 | `PULPITO_BASE_URL` | Pulpito base URL written into the ConfigMap |
 | `NIGHTLY_RUN_USER` | Nightly page run-owner filter |
-| `CACHE_TTL` | Cache TTL in seconds |
 | `CERT_MANAGER_ISSUER_NAME` | `ClusterIssuer` name (required unless `--skip-cert`) |
 
 ## CLI options

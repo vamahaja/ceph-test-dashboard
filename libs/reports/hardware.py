@@ -3,8 +3,8 @@
 Architecture comes from Paddles ``/nodes/`` (majority ``arch`` per
 ``machine_type``). Unmapped types stay ``Unknown``. Paddles
 ``/jobs/?machine_type=`` does not honour that filter, so callers load a
-posted window with ``HardwareStats.posted_between`` (runs only), pick a
-machine type, then call ``with_jobs`` for that subset.
+posted window from the catalog, pick a machine type, then scope jobs in
+memory.
 """
 
 from __future__ import annotations
@@ -12,7 +12,6 @@ from __future__ import annotations
 import re
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import date
 
 from libs.exceptions import PaddlesAPIError
 from libs.reports import DataSource
@@ -43,7 +42,6 @@ MACHINE_ERROR_RE = re.compile(
     r")",
     re.IGNORECASE,
 )
-_MACHINE_ERROR_RE = MACHINE_ERROR_RE
 
 
 def _mt_key(value: str | None) -> str:
@@ -146,22 +144,6 @@ class HardwareStats:
         )
 
     @classmethod
-    def posted_between(
-        cls,
-        date_start: date,
-        date_end: date,
-        *,
-        arch_by_machine_type: dict[str, str] | None = None,
-    ) -> HardwareStats:
-        """Load runs in the posted window without fetching per-run jobs."""
-        runs = TestRunsStats.posted_between(date_start, date_end)
-        return cls.from_testruns_jobs(
-            runs.testruns,
-            [],
-            arch_by_machine_type=arch_by_machine_type or {},
-        )
-
-    @classmethod
     def load_arch_map(cls) -> dict[str, str]:
         """Return ``machine_type → arch`` from live Paddles ``/nodes/``."""
         try:
@@ -213,21 +195,3 @@ class HardwareStats:
             jobs=jobs,
             arch_by_machine_type=self.arch_by_machine_type,
         )
-
-    def with_jobs(self) -> HardwareStats:
-        """Fetch jobs for the current run set (parallel per-run requests)."""
-        if not self.runs.testruns:
-            return HardwareStats(
-                runs=self.runs,
-                jobs=JobsStats.from_jobs([]),
-                arch_by_machine_type=self.arch_by_machine_type,
-            )
-        return HardwareStats(
-            runs=self.runs,
-            jobs=JobsStats.for_testruns(self.runs.testruns),
-            arch_by_machine_type=self.arch_by_machine_type,
-        )
-
-    def machine_error_jobs(self) -> list[Job]:
-        """Infra/lab failures in the current job set."""
-        return self.jobs.machine_errors()

@@ -144,15 +144,3 @@ def health_assessment(pass_rate: float, dead_rate: float) -> tuple[str, list[str
             f"{DEFAULT_HEALTH_DEAD_DEGRADED:.0f}%."
         )
     return badge, reasons
-
-
-def health_badge(pass_rate: float, dead_rate: float) -> tuple[str, str]:
-    """
-    Return ``(label, caption)`` from pass rate and dead rate.
-
-    Critical: pass < DEFAULT_HEALTH_PASS_CRITICAL or dead >= DEFAULT_HEALTH_DEAD_CRITICAL
-    Degraded: pass < DEFAULT_HEALTH_PASS_DEGRADED or dead >= DEFAULT_HEALTH_DEAD_DEGRADED
-    Healthy: otherwise
-    """
-    badge, reasons = health_assessment(pass_rate, dead_rate)
-    return badge, " ".join(reasons)

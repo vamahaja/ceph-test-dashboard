@@ -1,8 +1,0 @@
-import streamlit as st
-
-st.markdown(
-    "<h1 style='text-align: center;'>History</h1>",
-    unsafe_allow_html=True
-)
-
-st.write("This is the History page.")

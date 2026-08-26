@@ -33,7 +33,7 @@ from libs.views import (
     sync_query_params,
 )
 
-_COVERAGE_RUN_COLUMNS = (
+COVERAGE_RUN_COLUMNS = (
     "name",
     "status",
     "branch",
@@ -710,6 +710,6 @@ with tab_runs:
         ordered,
         pulpito,
         prefix="coverage",
-        columns=_COVERAGE_RUN_COLUMNS,
+        columns=COVERAGE_RUN_COLUMNS,
         heading="Runs",
     )

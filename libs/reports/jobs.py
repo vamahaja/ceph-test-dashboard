@@ -15,9 +15,7 @@ from libs.defaults import (
     DEFAULT_TOP_FAILED_RUNS,
     DEFAULT_TOP_FAILING_TESTS,
     DEFAULT_TOP_FAILURE_REASONS,
-    DEFAULT_TOP_MACHINE_ERRORS,
     DEFAULT_TOP_OS_SHARE,
-    DEFAULT_TOP_OS_TRENDS,
     DEFAULT_TOP_SUITE_SHARE,
     STATUS_COMPLETED,
     STATUS_FAILING,
@@ -36,7 +34,6 @@ from libs.reports.models import (
     GroupReliabilityStat,
     Job,
     JobsSummary,
-    OsSummary,
     PassRateCell,
     Results,
     ShaSummary,
@@ -163,13 +160,6 @@ class JobsStats(DataSource):
     def for_run(cls, run_name: str) -> JobsStats:
         """Load all jobs for a single testrun."""
         return cls(run_name=run_name)
-
-    @classmethod
-    def for_job(cls, run_name: str, job_id: str) -> Job | None:
-        """Load one job by testrun name and job id."""
-        raw = DataSource().job(run_name=run_name, job_id=str(job_id))
-        jobs = as_job_list(raw)
-        return to_job(jobs[0]) if jobs else None
 
     @classmethod
     def from_jobs(cls, jobs: list[Job]) -> JobsStats:
@@ -348,13 +338,6 @@ class JobsStats(DataSource):
             [job for job in self.jobs if sha_matches(job.sha1, sha)]
         )
 
-    def os_trends(self, n: int = DEFAULT_TOP_OS_TRENDS) -> list[DimensionStatusTrend]:
-        """Top OS types by completed-job volume; fall back to ``unknown``."""
-        rows = self.completed_stats.trends_by_os
-        ranked = [row for row in rows if row.key != "unknown"] or list(rows)
-        ranked.sort(key=lambda row: row.results.completed, reverse=True)
-        return ranked[:n]
-
     def suite_share_trends(self, n: int = DEFAULT_TOP_SUITE_SHARE) -> list[StatusShareTrend]:
         """Top suites by completed-job volume, remainder folded into ``other``."""
         rows = self.completed_stats.trends_by_suite
@@ -370,66 +353,12 @@ class JobsStats(DataSource):
         return _fold_share_trends(source, n)
 
     @cached_property
-    def pass_rate(self) -> float:
-        """Pass % among completed jobs (fail+dead treated as not passed)."""
-        completed = self.completed_jobs
-        if not completed:
-            return 0.0
-        passed = sum(1 for j in completed if j.status == "pass")
-        return pct(passed, len(completed))
-
-    @cached_property
-    def fail_rate(self) -> float:
-        """Fail+dead % among completed jobs."""
-        completed = self.completed_jobs
-        if not completed:
-            return 0.0
-        failed = sum(1 for j in completed if j.status in STATUS_FAILING)
-        return pct(failed, len(completed))
-
-    @cached_property
     def avg_duration(self) -> float:
         """Mean job duration in seconds (jobs with duration > 0)."""
         durations = [j.duration for j in self.jobs if j.duration]
         if not durations:
             return 0.0
         return sum(durations) / len(durations)
-
-    @cached_property
-    def os_summary(self) -> list[OsSummary]:
-        """Job outcomes grouped by OS type (status-based counts)."""
-        by_os: dict[str, OsSummary] = {}
-        for j in self.jobs:
-            os_type = j.os_type or "unknown"
-            if os_type not in by_os:
-                by_os[os_type] = OsSummary(os_type=os_type)
-            summary = by_os[os_type]
-            summary.cnt_jobs += 1
-            if j.status == "dead":
-                summary.cnt_dead += 1
-            elif j.status == "running":
-                summary.cnt_running += 1
-            elif j.status == "waiting":
-                summary.cnt_waiting += 1
-            elif j.status == "queued":
-                summary.cnt_queued += 1
-            elif j.success or j.status == "pass":
-                summary.cnt_pass += 1
-            else:
-                summary.cnt_fail += 1
-
-        for summary in by_os.values():
-            cnt = summary.cnt_jobs
-            if not cnt:
-                continue
-            summary.pct_pass = pct(summary.cnt_pass, cnt)
-            summary.pct_fail = pct(summary.cnt_fail, cnt)
-            summary.pct_dead = pct(summary.cnt_dead, cnt)
-            summary.pct_running = pct(summary.cnt_running, cnt)
-            summary.pct_waiting = pct(summary.cnt_waiting, cnt)
-            summary.pct_queued = pct(summary.cnt_queued, cnt)
-
-        return list(by_os.values())
 
     def status_by(self, dimension: str) -> list[DimensionStatusTrend]:
         """Status aggregates for a job field (suite/branch/os_type/…)."""
@@ -454,10 +383,6 @@ class JobsStats(DataSource):
             SuiteTrend(suite=row.key, results=row.results)
             for row in self.status_by("suite")
         ]
-
-    @cached_property
-    def trends_by_branch(self) -> list[DimensionStatusTrend]:
-        return self.status_by("branch")
 
     @cached_property
     def trends_by_os(self) -> list[DimensionStatusTrend]:
@@ -888,11 +813,3 @@ class JobsStats(DataSource):
             for job in self.jobs
             if is_machine_error(job.status, job.failure_reason, pattern=regex)
         ]
-
-    def machine_error_reasons(
-        self,
-        n: int = DEFAULT_TOP_MACHINE_ERRORS,
-    ) -> list[FailureReasonStat]:
-        """Top machine-error failure reasons (hardware report)."""
-        errors = JobsStats.from_jobs(self.machine_errors())
-        return errors.top_failure_reasons(n)

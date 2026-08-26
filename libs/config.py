@@ -2,13 +2,9 @@ import configparser
 import os
 
 from libs.defaults import (
-    DEFAULT_CACHE_TTL,
     DEFAULT_CONFIG_DIR,
     DEFAULT_CONFIG_NAME,
-    DEFAULT_HW_DAYS_WINDOW,
-    DEFAULT_HW_MAX_RUNS,
     DEFAULT_HW_MIN_RUNS,
-    DEFAULT_HW_RUN_SCAN,
     DEFAULT_NIGHTLY_RUN_USER,
     DEFAULT_PADDLE_TLS_VERIFY,
     DEFAULT_PADDLE_TIMEOUT,
@@ -117,13 +113,6 @@ def get_paddle_config() -> dict:
     }
 
 
-def get_cache_ttl() -> int:
-    """Return cache TTL in seconds from config."""
-    return _as_int(
-        read_config().get("cache", {}).get("ttl", DEFAULT_CACHE_TTL)
-    )
-
-
 def get_refresh_minutes() -> int:
     """Return report snapshot lifetime in minutes from config.
 
@@ -180,12 +169,7 @@ def get_hardware_config() -> dict:
     """Return hardware dashboard tuning parameters."""
     config = read_config().get("hardware", {})
     return {
-        "run_scan": _as_int(config.get("run_scan", DEFAULT_HW_RUN_SCAN)),
-        "max_runs": _as_int(config.get("max_runs", DEFAULT_HW_MAX_RUNS)),
         "min_runs": _as_int(config.get("min_runs", DEFAULT_HW_MIN_RUNS)),
-        "days_window": _as_int(
-            config.get("days_window", DEFAULT_HW_DAYS_WINDOW)
-        ),
     }
 
 

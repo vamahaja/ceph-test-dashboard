@@ -32,14 +32,14 @@ from libs.reports.models import (
 from libs.reports.testruns import TestRunsStats
 from libs.reports.utils import as_utc, format_age
 
-_BADGE_STATUS = {
+BADGE_STATUS = {
     "Healthy": "pass",
     "Degraded": "queued",
     "Critical": "fail",
     "Unknown": "unknown",
 }
 
-_ACTIVE_RUN_COLUMNS = (
+ACTIVE_RUN_COLUMNS = (
     "name",
     "status",
     "branch",
@@ -49,6 +49,21 @@ _ACTIVE_RUN_COLUMNS = (
     "total_jobs",
     "posted",
 )
+
+WINDOW_DAYS = {
+    "Last 24 hours": 1,
+    "Last 7 days": 7,
+    "Last 15 days": 15,
+    "Last 30 days": 30,
+}
+WINDOW_BY_QUERY = {
+    "24h": "Last 24 hours",
+    "7d": "Last 7 days",
+    "15d": "Last 15 days",
+    "30d": "Last 30 days",
+}
+QUERY_BY_WINDOW = {label: key for key, label in WINDOW_BY_QUERY.items()}
+DEFAULT_WINDOW = "Last 24 hours"
 
 
 def _table_height(rows: int, *, cap: int = 800, min_rows: int = 1) -> int:
@@ -88,22 +103,6 @@ def sync_query_params(updates: dict[str, str | None]) -> None:
             del st.query_params[key]
 
 
-_WINDOW_DAYS = {
-    "Last 24 hours": 1,
-    "Last 7 days": 7,
-    "Last 15 days": 15,
-    "Last 30 days": 30,
-}
-_WINDOW_BY_QUERY = {
-    "24h": "Last 24 hours",
-    "7d": "Last 7 days",
-    "15d": "Last 15 days",
-    "30d": "Last 30 days",
-}
-_QUERY_BY_WINDOW = {label: key for key, label in _WINDOW_BY_QUERY.items()}
-_DEFAULT_WINDOW = "Last 24 hours"
-
-
 class TimeWindow(NamedTuple):
     """Inclusive calendar-day window selected from the time-window control."""
 
@@ -117,23 +116,23 @@ def sidebar_time_window(*, prefix: str, label: str = "Time window") -> TimeWindo
     """Sidebar preset time window, initialized from the ``window`` query param."""
     key = f"{prefix}_window"
     if key not in st.session_state:
-        st.session_state[key] = _WINDOW_BY_QUERY.get(
-            query_str("window"), _DEFAULT_WINDOW
+        st.session_state[key] = WINDOW_BY_QUERY.get(
+            query_str("window"), DEFAULT_WINDOW
         )
-    elif st.session_state[key] not in _WINDOW_DAYS:
-        st.session_state[key] = _DEFAULT_WINDOW
+    elif st.session_state[key] not in WINDOW_DAYS:
+        st.session_state[key] = DEFAULT_WINDOW
     window_label = st.sidebar.selectbox(
         label,
-        list(_WINDOW_DAYS.keys()),
+        list(WINDOW_DAYS.keys()),
         key=key,
     )
     end = datetime.now(timezone.utc).date()
-    start = end - timedelta(days=_WINDOW_DAYS[window_label] - 1)
+    start = end - timedelta(days=WINDOW_DAYS[window_label] - 1)
     return TimeWindow(
         label=window_label,
         start=start,
         end=end,
-        query=_QUERY_BY_WINDOW[window_label],
+        query=QUERY_BY_WINDOW[window_label],
     )
 
 
@@ -404,7 +403,7 @@ def show_cluster_health(
     show_worst_branch: bool = True,
 ) -> None:
     """Render the health badge card (completed mix, KPIs, chips)."""
-    accent = _BADGE_STATUS.get(health.badge, "unknown")
+    accent = BADGE_STATUS.get(health.badge, "unknown")
     completed = health.completed
     reasons = "".join(
         f'<li style="margin:0.15rem 0">{escape(reason)}</li>'
@@ -511,7 +510,7 @@ def runs_frame(
     runs: list[TestRun],
     pulpito: str | None,
     *,
-    columns: tuple[str, ...] = _ACTIVE_RUN_COLUMNS,
+    columns: tuple[str, ...] = ACTIVE_RUN_COLUMNS,
 ) -> pd.DataFrame:
     """Build a run table; ``name`` values are Pulpito links when configured."""
     rows = []
@@ -539,7 +538,7 @@ def show_runs_table(
     runs: list[TestRun],
     pulpito: str | None,
     *,
-    columns: tuple[str, ...] = _ACTIVE_RUN_COLUMNS,
+    columns: tuple[str, ...] = ACTIVE_RUN_COLUMNS,
     height: int | None = None,
 ) -> None:
     """Status-tinted run table with Pulpito name links."""
@@ -563,7 +562,7 @@ def show_status_filtered_runs(
     pulpito: str | None,
     *,
     prefix: str,
-    columns: tuple[str, ...] = _ACTIVE_RUN_COLUMNS,
+    columns: tuple[str, ...] = ACTIVE_RUN_COLUMNS,
     heading: str = "Runs",
 ) -> None:
     """Runs table with an optional status multiselect."""

@@ -89,8 +89,8 @@ See [`deployment/README.md`](deployment/README.md) for full Podman deployment in
 | Page | Path | Description |
 |------|------|-------------|
 | Search | `pages/tools/search.py` | Search runs and jobs |
-| History | `pages/tools/history.py` | Historical trends |
 | Alerts | `pages/tools/alerts.py` | Automated alerts for high failure rates, dead jobs, and flaky suites |
+| Agent | `pages/tools/agent.py` | AI agent for asking questions about test runs, jobs, and failures |
 
 ## Architecture
 

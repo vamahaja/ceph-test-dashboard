@@ -14,16 +14,6 @@ class Paddles:
         self.timeout = int(self.config["timeout"])
         self.tls_verify = self.config["tls_verify"]
 
-    def __post_init__(self) -> None:
-        self._check_connection()
-
-    def _check_connection(self) -> None:
-        """Check if the Paddles API is reachable."""
-        try:
-            self._get("/")
-        except PaddlesAPIError as e:
-            raise PaddlesAPIError(f"Unable to connect to Paddles API: {e}") from e
-
     def _get(self, endpoint: str, params: dict | None = None):
         """Fetch data from the Paddles API."""
         url = f"{self.base_url.rstrip('/')}{endpoint}"
@@ -112,13 +102,6 @@ class Paddles:
         """Fetch all jobs for a run."""
         return self._get(
             f"/runs/{self._path_segment(run_name)}/jobs/"
-        )
-
-    def job(self, run_name: str, job_id: str):
-        """Fetch a single job by run name and job ID."""
-        return self._get(
-            f"/runs/{self._path_segment(run_name)}/jobs/"
-            f"{self._path_segment(job_id)}/"
         )
 
     def jobs(
