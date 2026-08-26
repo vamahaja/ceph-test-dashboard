@@ -52,8 +52,8 @@ DEFAULT_FAILURE_REASON_MAX_LEN = 80
 DEFAULT_REFRESH_MINUTES = 60
 DEFAULT_OVERVIEW_REFRESH_MINUTES = DEFAULT_REFRESH_MINUTES
 
-# Stable branches shown on the Releases report
-DEFAULT_RELEASE_BRANCHES = ("tentacle", "squid", "umbrella")
+# Branches shown on the Releases report
+DEFAULT_RELEASE_BRANCHES = ("main", "umbrella", "tentacle", "squid")
 
 # Infra / machine-error reasons used by the hardware report
 DEFAULT_MACHINE_ERROR_PATTERN = (

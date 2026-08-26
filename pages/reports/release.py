@@ -1,4 +1,4 @@
-"""Release health for stable Ceph branches (tentacle, squid, umbrella)."""
+"""Release health for Ceph branches (main, umbrella, tentacle, squid)."""
 
 from __future__ import annotations
 
