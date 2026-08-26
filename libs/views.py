@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 from html import escape
+from typing import NamedTuple
 
 import pandas as pd
 import plotly.express as px
@@ -28,7 +29,7 @@ from libs.reports.models import (
     TestRun,
 )
 from libs.reports.testruns import TestRunsStats
-from libs.reports.utils import as_utc, format_age, parse_iso_date
+from libs.reports.utils import as_utc, format_age
 
 _BADGE_STATUS = {
     "Healthy": "pass",
@@ -86,29 +87,54 @@ def sync_query_params(updates: dict[str, str | None]) -> None:
             del st.query_params[key]
 
 
-def sidebar_date_range(
-    *,
-    prefix: str,
-    default_start: date,
-    default_end: date,
-    label: str = "Date range",
-) -> tuple[date, date]:
-    """Sidebar date range, initialized from ``from`` / ``to`` query params."""
-    key = f"{prefix}_dates"
+_WINDOW_DAYS = {
+    "Last 24 hours": 1,
+    "Last 7 days": 7,
+    "Last 15 days": 15,
+    "Last 30 days": 30,
+}
+_WINDOW_BY_QUERY = {
+    "24h": "Last 24 hours",
+    "7d": "Last 7 days",
+    "15d": "Last 15 days",
+    "30d": "Last 30 days",
+}
+_QUERY_BY_WINDOW = {label: key for key, label in _WINDOW_BY_QUERY.items()}
+_DEFAULT_WINDOW = "Last 24 hours"
+TIME_WINDOW_MAX_DAYS = max(_WINDOW_DAYS.values())
+
+
+class TimeWindow(NamedTuple):
+    """Inclusive calendar-day window selected from the time-window control."""
+
+    label: str
+    start: date
+    end: date
+    query: str
+
+
+def sidebar_time_window(*, prefix: str, label: str = "Time window") -> TimeWindow:
+    """Sidebar preset time window, initialized from the ``window`` query param."""
+    key = f"{prefix}_window"
     if key not in st.session_state:
-        start = parse_iso_date(query_str("from")) or default_start
-        end = parse_iso_date(query_str("to")) or default_end
-        if start > end:
-            start, end = end, start
-        st.session_state[key] = (start, end)
-    date_range = st.sidebar.date_input(label, key=key)
-    if isinstance(date_range, (list, tuple)) and len(date_range) == 2:
-        start_date, end_date = date_range
-    else:
-        start_date, end_date = default_start, default_end
-    if start_date > end_date:
-        start_date, end_date = end_date, start_date
-    return start_date, end_date
+        st.session_state[key] = _WINDOW_BY_QUERY.get(
+            query_str("window"), _DEFAULT_WINDOW
+        )
+    elif st.session_state[key] not in _WINDOW_DAYS:
+        st.session_state[key] = _DEFAULT_WINDOW
+    window_label = st.sidebar.selectbox(
+        label,
+        list(_WINDOW_DAYS.keys()),
+        key=key,
+    )
+    end = datetime.now(timezone.utc).date()
+    start = end - timedelta(days=_WINDOW_DAYS[window_label] - 1)
+    return TimeWindow(
+        label=window_label,
+        start=start,
+        end=end,
+        query=_QUERY_BY_WINDOW[window_label],
+    )
 
 
 def sidebar_branch_select(branches: list[str], *, prefix: str) -> str:

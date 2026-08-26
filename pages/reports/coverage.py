@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 
 import pandas as pd
 import plotly.express as px
@@ -30,14 +30,14 @@ from libs.reports.testruns import TestRunsStats
 from libs.reports.utils import as_utc
 from libs.views import (
     query_str,
+    sidebar_suite_select,
+    sidebar_time_window,
     show_active_runs,
     show_cluster_health,
     show_daily_trends,
     show_pass_heatmap,
     show_scope_caption,
     show_status_filtered_runs,
-    sidebar_date_range,
-    sidebar_suite_select,
     sync_query_params,
 )
 
@@ -217,12 +217,8 @@ st.markdown(
 
 st.sidebar.header("Filters")
 
-today = date.today()
-start_date, end_date = sidebar_date_range(
-    prefix="coverage",
-    default_start=today - timedelta(days=7),
-    default_end=today,
-)
+time_window = sidebar_time_window(prefix="coverage")
+start_date, end_date = time_window.start, time_window.end
 
 try:
     payload_runs, _, loaded_at = _ensure_coverage_runs(start_date, end_date)
@@ -232,7 +228,7 @@ except (PaddlesAPIError, ConfigError) as exc:
 
 window_runs = TestRunsStats.from_testruns(payload_runs)
 if not window_runs.testruns:
-    st.warning(f"No runs found between {start_date} and {end_date}.")
+    st.warning(f"No runs found in the selected window ({time_window.label}).")
     st.stop()
 
 all_suites = sorted({run.suite for run in window_runs.testruns if run.suite})
@@ -268,8 +264,9 @@ jobs = JobsStats.from_jobs(payload_jobs).for_run_set(runs.testruns)
 sync_query_params(
     {
         "suite": selected_suite,
-        "from": start_date.isoformat(),
-        "to": end_date.isoformat(),
+        "window": time_window.query,
+        "from": None,
+        "to": None,
         "min_exec": str(min_executions),
     }
 )
@@ -281,7 +278,7 @@ if not jobs.jobs:
 now = datetime.now(timezone.utc)
 pulpito = base_url()
 health = runs.cluster_health(jobs, now=now)
-window_label = f"{selected_suite} · {start_date:%Y-%m-%d} → {end_date:%Y-%m-%d}"
+window_label = f"{selected_suite} · {time_window.label}"
 branches_in_scope = sorted({run.branch for run in runs.testruns if run.branch})
 
 show_cluster_health(
@@ -540,7 +537,7 @@ with tab_flaky:
     if not analyzed:
         st.warning(
             f"No tests have at least {min_executions} executions. "
-            "Try lowering the **Min Executions** slider or widening the date range."
+            "Try lowering the **Min Executions** slider or choosing a longer time window."
         )
     else:
         flaky_tests = [row for row in analyzed if row.flakiness_score > 0]

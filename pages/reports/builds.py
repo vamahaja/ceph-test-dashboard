@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 
 import streamlit as st
 
@@ -21,9 +21,9 @@ from libs.reports.testruns import TestRunsStats
 from libs.reports.utils import as_utc
 from libs.views import (
     sidebar_branch_select,
-    sidebar_date_range,
     sidebar_sha_select,
     sidebar_suite_filter,
+    sidebar_time_window,
     show_active_runs,
     show_cluster_health,
     show_daily_trends,
@@ -91,12 +91,8 @@ st.markdown(
 
 st.sidebar.header("Filters")
 
-today = date.today()
-start_date, end_date = sidebar_date_range(
-    prefix="builds",
-    default_start=today - timedelta(days=7),
-    default_end=today,
-)
+time_window = sidebar_time_window(prefix="builds")
+start_date, end_date = time_window.start, time_window.end
 
 try:
     payload_runs, payload_jobs, loaded_at = _ensure_builds_payload(
@@ -112,7 +108,7 @@ window_runs = TestRunsStats.from_testruns(payload_runs)
 all_jobs = JobsStats.from_jobs(payload_jobs)
 if not window_runs.testruns:
     st.warning(
-        f"No runs found between {start_date} and {end_date}."
+        f"No runs found in the selected window ({time_window.label})."
     )
     st.stop()
 
@@ -144,8 +140,9 @@ runs = suite_runs.for_sha(selected_sha) if selected_sha else suite_runs
 sync_query_params(
     {
         "branch": selected_branch,
-        "from": start_date.isoformat(),
-        "to": end_date.isoformat(),
+        "window": time_window.query,
+        "from": None,
+        "to": None,
         "suite": (
             None
             if set(selected_suites) == set(all_suites)
@@ -167,7 +164,7 @@ if not jobs.jobs:
 now = datetime.now(timezone.utc)
 pulpito = base_url()
 health = runs.cluster_health(jobs, now=now)
-window_label = f"{selected_branch} · {start_date:%Y-%m-%d} → {end_date:%Y-%m-%d}"
+window_label = f"{selected_branch} · {time_window.label}"
 if selected_sha:
     window_label = f"{window_label} · {selected_sha}"
 

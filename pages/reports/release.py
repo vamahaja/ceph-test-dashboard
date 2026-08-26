@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 
 import streamlit as st
 
@@ -22,9 +22,9 @@ from libs.reports.testruns import TestRunsStats
 from libs.reports.utils import as_utc
 from libs.views import (
     sidebar_branch_select,
-    sidebar_date_range,
     sidebar_sha_select,
     sidebar_suite_filter,
+    sidebar_time_window,
     show_active_runs,
     show_cluster_health,
     show_daily_trends,
@@ -127,12 +127,8 @@ st.sidebar.header("Filters")
 branches = get_release_branches()
 selected_branch = sidebar_branch_select(branches, prefix="release")
 
-today = date.today()
-start_date, end_date = sidebar_date_range(
-    prefix="release",
-    default_start=today - timedelta(days=7),
-    default_end=today,
-)
+time_window = sidebar_time_window(prefix="release")
+start_date, end_date = time_window.start, time_window.end
 
 try:
     payload_runs, _, loaded_at = _ensure_release_runs(
@@ -147,7 +143,7 @@ all_runs = TestRunsStats.from_testruns(payload_runs)
 if not all_runs.testruns:
     st.warning(
         f"No runs found for branch **{selected_branch}** "
-        f"between {start_date} and {end_date}."
+        f"in the selected window ({time_window.label})."
     )
     st.stop()
 
@@ -182,8 +178,9 @@ jobs = all_jobs.for_run_set(runs.testruns)
 sync_query_params(
     {
         "branch": selected_branch,
-        "from": start_date.isoformat(),
-        "to": end_date.isoformat(),
+        "window": time_window.query,
+        "from": None,
+        "to": None,
         "suite": (
             None
             if set(selected_suites) == set(all_suites)
@@ -204,7 +201,7 @@ if not jobs.jobs:
 now = datetime.now(timezone.utc)
 pulpito = base_url()
 health = runs.cluster_health(jobs, now=now)
-window_label = f"{selected_branch} · {start_date:%Y-%m-%d} → {end_date:%Y-%m-%d}"
+window_label = f"{selected_branch} · {time_window.label}"
 if selected_sha:
     window_label = f"{window_label} · {selected_sha}"
 

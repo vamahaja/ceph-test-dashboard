@@ -22,8 +22,8 @@ from libs.reports.testruns import TestRunsStats
 from libs.reports.utils import as_utc
 from libs.views import (
     sidebar_branch_select,
-    sidebar_date_range,
     sidebar_suite_filter,
+    sidebar_time_window,
     show_active_runs,
     show_cluster_health,
     show_daily_trends,
@@ -158,13 +158,8 @@ st.markdown(
 st.sidebar.header("Filters")
 
 nightly_user = get_nightly_run_user()
-today = date.today()
-start_date, end_date = sidebar_date_range(
-    prefix="nightly",
-    default_start=today - timedelta(days=6),
-    default_end=today,
-    label="Scheduled date range",
-)
+time_window = sidebar_time_window(prefix="nightly")
+start_date, end_date = time_window.start, time_window.end
 
 try:
     payload_runs, _, loaded_at = _ensure_nightly_runs(
@@ -179,7 +174,7 @@ all_runs = TestRunsStats.from_testruns(payload_runs)
 if not all_runs.testruns:
     st.info(
         f"No standard scheduled nightly regression runs for user `{nightly_user}` "
-        f"between {start_date} and {end_date}."
+        f"in the selected window ({time_window.label})."
     )
     st.stop()
 
@@ -219,8 +214,9 @@ jobs = all_jobs.for_run_set(runs.testruns)
 sync_query_params(
     {
         "branch": selected_branch,
-        "from": start_date.isoformat(),
-        "to": end_date.isoformat(),
+        "window": time_window.query,
+        "from": None,
+        "to": None,
         "suite": (
             None
             if set(selected_suites) == set(all_suites)
@@ -240,7 +236,7 @@ if not jobs.jobs:
 now = datetime.now(timezone.utc)
 pulpito = base_url()
 health = runs.cluster_health(jobs, now=now)
-window_label = f"{selected_branch} · {start_date:%Y-%m-%d} → {end_date:%Y-%m-%d}"
+window_label = f"{selected_branch} · {time_window.label}"
 
 show_cluster_health(
     health,

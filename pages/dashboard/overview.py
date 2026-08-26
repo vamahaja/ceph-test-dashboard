@@ -1,7 +1,7 @@
 """
 Ceph Test Dashboard — landing / ops command center.
 
-Rolling-window cluster health, active runs, and job trends by OS.
+Cluster health, active runs, and job trends by OS for a selected time window.
 Specialist pages own deep drill-down.
 """
 
@@ -19,10 +19,12 @@ from libs.refresh import (
     new_store,
     periodic_rerun,
     refresh_every,
+    utc_day_start,
 )
 from libs.reports.jobs import JobsStats
 from libs.reports.testruns import TestRunsStats
 from libs.views import (
+    TIME_WINDOW_MAX_DAYS,
     query_str,
     show_active_runs,
     show_cluster_health,
@@ -30,21 +32,9 @@ from libs.views import (
     show_job_mix,
     show_needs_attention,
     show_scope_caption,
+    sidebar_time_window,
     sync_query_params,
 )
-
-_WINDOW_OPTIONS = {
-    "Last 24 hours": timedelta(hours=24),
-    "Last 7 days": timedelta(days=7),
-    "Last 30 days": timedelta(days=30),
-}
-
-_WINDOW_BY_QUERY = {
-    "24h": "Last 24 hours",
-    "7d": "Last 7 days",
-    "30d": "Last 30 days",
-}
-_QUERY_BY_WINDOW = {label: key for key, label in _WINDOW_BY_QUERY.items()}
 
 _ACTIVE_TABLE_CAP = DEFAULT_TOP_ACTIVE_TESTRUNS
 
@@ -59,7 +49,9 @@ def _ensure_overview_payload() -> tuple[list, list, datetime | None]:
     """Full 30-day load once, then merge recent runs/jobs when the interval elapses."""
     store = _overview_store()
     now = datetime.now(timezone.utc)
-    keep_since = now - max(_WINDOW_OPTIONS.values())
+    keep_since = utc_day_start(
+        now.date() - timedelta(days=TIME_WINDOW_MAX_DAYS - 1)
+    )
 
     def load_full():
         runs = TestRunsStats.since(keep_since)
@@ -101,17 +93,9 @@ st.markdown(
 )
 
 st.sidebar.header("Filters")
-if "overview_window" not in st.session_state:
-    st.session_state["overview_window"] = _WINDOW_BY_QUERY.get(
-        query_str("window"), "Last 7 days"
-    )
-window_label = st.sidebar.selectbox(
-    "Time window",
-    list(_WINDOW_OPTIONS.keys()),
-    key="overview_window",
-)
+time_window = sidebar_time_window(prefix="overview")
 now = datetime.now(timezone.utc)
-cutoff = now - _WINDOW_OPTIONS[window_label]
+cutoff = utc_day_start(time_window.start)
 
 try:
     payload_runs, payload_jobs, loaded_at = _ensure_overview_payload()
@@ -125,7 +109,7 @@ all_runs = TestRunsStats.from_testruns(payload_runs).posted_since(cutoff)
 all_jobs = JobsStats.from_jobs(payload_jobs).for_run_set(all_runs.testruns)
 
 if not all_runs.testruns:
-    st.warning(f"No runs found in the selected window ({window_label}).")
+    st.warning(f"No runs found in the selected window ({time_window.label}).")
     st.stop()
 
 if not all_jobs.jobs:
@@ -163,13 +147,13 @@ health = runs.cluster_health(jobs, now=now)
 
 show_cluster_health(
     health,
-    heading=f"Cluster health · {window_label}",
+    heading=f"Cluster health · {time_window.label}",
 )
 show_scope_caption(runs, jobs, loaded_at=loaded_at, now=now)
 
 sync_query_params(
     {
-        "window": _QUERY_BY_WINDOW.get(window_label),
+        "window": time_window.query,
         "branch": None if branch_label == "All" else branch_label,
     }
 )
