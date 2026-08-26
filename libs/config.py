@@ -158,10 +158,15 @@ def get_refresh_seconds() -> int:
 
 
 def get_release_branches() -> list[str]:
-    """Return stable release branches from config (comma-separated)."""
+    """Return release branches from config, in default display order."""
     raw = read_config().get("release", {}).get("branches", "")
     branches = [part.strip() for part in str(raw).split(",") if part.strip()]
-    return branches or list(DEFAULT_RELEASE_BRANCHES)
+    if not branches:
+        return list(DEFAULT_RELEASE_BRANCHES)
+    rank = {name: i for i, name in enumerate(DEFAULT_RELEASE_BRANCHES)}
+    unique = list(dict.fromkeys(branches))
+    unique.sort(key=lambda name: (rank.get(name, len(rank)), name))
+    return unique
 
 
 def get_nightly_run_user() -> str:

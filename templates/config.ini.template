@@ -15,4 +15,4 @@ ttl = 3600
 refresh_minutes = 60
 
 [release]
-branches = tentacle, squid, umbrella
+branches = main, umbrella, tentacle, squid

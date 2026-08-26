@@ -23,7 +23,7 @@ data:
     refresh_minutes = 60
 
     [release]
-    branches = tentacle, squid, umbrella
+    branches = main, umbrella, tentacle, squid
 
     [hardware]
     run_scan = 200

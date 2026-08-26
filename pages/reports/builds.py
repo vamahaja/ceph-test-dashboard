@@ -6,6 +6,7 @@ from datetime import date, datetime, timezone
 
 import streamlit as st
 
+from libs.config import get_release_branches
 from libs.exceptions import ConfigError, PaddlesAPIError
 from libs.pulpito import base_url
 from libs.refresh import (
@@ -112,9 +113,16 @@ if not window_runs.testruns:
     )
     st.stop()
 
-branches = sorted({run.branch for run in window_runs.testruns if run.branch})
+release_branches = {name.lower() for name in get_release_branches()}
+branches = sorted(
+    {
+        run.branch
+        for run in window_runs.testruns
+        if run.branch and run.branch.lower() not in release_branches
+    }
+)
 if not branches:
-    st.warning("No branches found in the selected window.")
+    st.warning("No non-release branches found in the selected window.")
     st.stop()
 
 selected_branch = sidebar_branch_select(branches, prefix="builds")

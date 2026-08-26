@@ -25,7 +25,6 @@ from libs.reports.jobs import JobsStats
 from libs.reports.testruns import TestRunsStats
 from libs.views import (
     TIME_WINDOW_MAX_DAYS,
-    query_str,
     show_active_runs,
     show_cluster_health,
     show_daily_trends,
@@ -105,41 +104,15 @@ except (PaddlesAPIError, ConfigError) as exc:
 
 _periodic_overview_refresh()
 
-all_runs = TestRunsStats.from_testruns(payload_runs).posted_since(cutoff)
-all_jobs = JobsStats.from_jobs(payload_jobs).for_run_set(all_runs.testruns)
+runs = TestRunsStats.from_testruns(payload_runs).posted_since(cutoff)
+jobs = JobsStats.from_jobs(payload_jobs).for_run_set(runs.testruns)
 
-if not all_runs.testruns:
+if not runs.testruns:
     st.warning(f"No runs found in the selected window ({time_window.label}).")
     st.stop()
 
-if not all_jobs.jobs:
-    st.warning("No job data available for runs in the selected window.")
-    st.stop()
-
-branches = sorted({run.branch for run in all_runs.testruns if run.branch})
-branch_options = ["All"] + branches
-if "overview_branch" not in st.session_state:
-    qp_branch = query_str("branch")
-    st.session_state["overview_branch"] = (
-        qp_branch if qp_branch in branch_options else "All"
-    )
-elif st.session_state["overview_branch"] not in branch_options:
-    st.session_state["overview_branch"] = "All"
-branch_label = st.sidebar.selectbox(
-    "Branch",
-    branch_options,
-    key="overview_branch",
-)
-branch = "" if branch_label == "All" else branch_label
-runs = all_runs.for_branch(branch)
-jobs = all_jobs.for_branch(branch)
-
-if not runs.testruns:
-    st.warning(f"No runs found for branch `{branch_label}`.")
-    st.stop()
-
 if not jobs.jobs:
-    st.warning(f"No job data available for branch `{branch_label}`.")
+    st.warning("No job data available for runs in the selected window.")
     st.stop()
 
 pulpito = base_url()
@@ -154,7 +127,7 @@ show_scope_caption(runs, jobs, loaded_at=loaded_at, now=now)
 sync_query_params(
     {
         "window": time_window.query,
-        "branch": None if branch_label == "All" else branch_label,
+        "branch": None,
     }
 )
 
