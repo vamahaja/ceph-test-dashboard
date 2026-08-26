@@ -8,7 +8,7 @@ Architecture comes from live Paddles ``/nodes/`` inventory.
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 
 import pandas as pd
 import plotly.express as px
@@ -39,15 +39,14 @@ from libs.views import (
     show_scope_caption,
     show_status_filtered_runs,
     sidebar_branch_filter,
-    sidebar_date_range,
     sidebar_machine_select,
     sidebar_suite_filter,
+    sidebar_time_window,
     sync_query_params,
 )
 
 _HW = get_hardware_config()
 _MIN_RUNS = _HW["min_runs"]
-_DAYS_WINDOW = _HW["days_window"]
 
 _HW_RUN_COLUMNS = (
     "name",
@@ -251,12 +250,8 @@ st.markdown(
 
 st.sidebar.header("Filters")
 
-today = date.today()
-start_date, end_date = sidebar_date_range(
-    prefix="hardware",
-    default_start=today - timedelta(days=max(_DAYS_WINDOW, 1)),
-    default_end=today,
-)
+time_window = sidebar_time_window(prefix="hardware")
+start_date, end_date = time_window.start, time_window.end
 
 try:
     payload_runs, _, loaded_at = _ensure_hardware_runs(start_date, end_date)
@@ -269,20 +264,20 @@ window = HardwareStats.from_testruns_jobs(
     payload_runs, [], arch_by_machine_type=arch_map
 )
 if not window.runs.testruns:
-    st.warning(f"No runs found between {start_date} and {end_date}.")
+    st.warning(f"No runs found in the selected window ({time_window.label}).")
     st.stop()
 
 machine_types = window.machine_types()
 if not machine_types:
     st.warning(
-        f"No runs with a machine type found between {start_date} and {end_date}."
+        f"No runs with a machine type found in the selected window ({time_window.label})."
     )
     st.stop()
 
 selected_mt = sidebar_machine_select(
     machine_types,
     prefix="hardware",
-    help_text="Only machine types with runs in the selected date range are shown.",
+    help_text="Only machine types with runs in the selected time window are shown.",
 )
 arch_label = window.architecture(selected_mt)
 st.sidebar.caption(f"Architecture: **{arch_label}**")
@@ -328,8 +323,9 @@ jobs = scoped.jobs.for_run_set(runs.testruns)
 sync_query_params(
     {
         "machine": selected_mt,
-        "from": start_date.isoformat(),
-        "to": end_date.isoformat(),
+        "window": time_window.query,
+        "from": None,
+        "to": None,
         "branch": (
             None
             if set(selected_branches) == set(all_branches)
@@ -359,7 +355,7 @@ if not jobs.jobs:
 now = datetime.now(timezone.utc)
 pulpito = base_url()
 health = runs.cluster_health(jobs, now=now)
-window_label = f"{selected_mt} · {start_date:%Y-%m-%d} → {end_date:%Y-%m-%d}"
+window_label = f"{selected_mt} · {time_window.label}"
 
 show_cluster_health(
     health,
@@ -375,7 +371,7 @@ if n_runs < _MIN_RUNS:
     st.warning(
         f"Only **{n_runs} run{'s' if n_runs != 1 else ''}** found for "
         f"**{selected_mt}** in this window — statistics may not be reliable. "
-        "Try widening the date range."
+        "Try a longer time window."
     )
 
 tab_branch, tab_suite, tab_os, tab_fail, tab_runs = st.tabs(
