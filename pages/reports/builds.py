@@ -2,21 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 
 import streamlit as st
 
 from libs.config import get_release_branches
-from libs.exceptions import ConfigError, PaddlesAPIError
 from libs.pulpito import base_url
-from libs.refresh import (
-    ensure_payload,
-    new_store,
-    periodic_rerun,
-    refresh_every,
-    utc_day_end_exclusive,
-    utc_day_start,
-)
+from libs.refresh import get_catalog, utc_day_start
 from libs.reports.jobs import JobsStats
 from libs.reports.testruns import TestRunsStats
 from libs.reports.utils import as_utc
@@ -48,40 +40,6 @@ _BUILD_RUN_COLUMNS = (
 )
 
 
-@st.cache_resource
-def _builds_store() -> dict:
-    return new_store()
-
-
-def _ensure_builds_payload(start: date, end: date):
-    """Full window load once, then merge recent runs/jobs on the refresh interval."""
-
-    def load_full():
-        runs = TestRunsStats.posted_between(start, end)
-        jobs = JobsStats.for_testruns(runs.testruns)
-        return runs.testruns, jobs.jobs
-
-    def load_recent(patch_since: datetime):
-        runs = TestRunsStats.since(patch_since)
-        jobs = JobsStats.for_testruns(runs.testruns)
-        return runs.testruns, jobs.jobs
-
-    return ensure_payload(
-        _builds_store(),
-        key=(start.isoformat(), end.isoformat()),
-        load_full=load_full,
-        load_recent=load_recent,
-        keep_since=utc_day_start(start),
-        keep_until=utc_day_end_exclusive(end),
-        spinner_full="Loading recent runs…",
-    )
-
-
-@st.fragment(run_every=refresh_every())
-def _periodic_builds_refresh() -> None:
-    periodic_rerun(_builds_store())
-
-
 st.markdown(
     "<h1 style='text-align: center;'>Build Analysis</h1>",
     unsafe_allow_html=True,
@@ -95,18 +53,12 @@ st.sidebar.header("Filters")
 time_window = sidebar_time_window(prefix="builds")
 start_date, end_date = time_window.start, time_window.end
 
-try:
-    payload_runs, payload_jobs, loaded_at = _ensure_builds_payload(
-        start_date, end_date
-    )
-except (PaddlesAPIError, ConfigError) as exc:
-    st.warning(f"Could not load build data: {exc}")
-    st.stop()
-
-_periodic_builds_refresh()
-
-window_runs = TestRunsStats.from_testruns(payload_runs)
-all_jobs = JobsStats.from_jobs(payload_jobs)
+catalog = get_catalog()
+window_runs = TestRunsStats.from_testruns(catalog.runs).posted_since(
+    utc_day_start(start_date)
+)
+all_jobs = JobsStats.from_jobs(catalog.jobs)
+loaded_at = catalog.loaded_at
 if not window_runs.testruns:
     st.warning(
         f"No runs found in the selected window ({time_window.label})."

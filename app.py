@@ -1,4 +1,14 @@
+import time
+
 import streamlit as st
+
+from libs.refresh import (
+    catalog_error,
+    catalog_is_ready,
+    catalog_progress,
+    start_catalog,
+)
+from libs.views import show_data_status
 
 
 st.set_page_config(
@@ -77,6 +87,31 @@ pg = st.navigation(
         "Tools": [search, history, alerts],
     }
 )
+
+start_catalog()
+if not catalog_is_ready():
+    st.markdown(
+        "<h1 style='text-align: center;'>Initialization</h1>",
+        unsafe_allow_html=True,
+    )
+    st.info(
+        "Loading the last 30 days of test data. "
+        "The dashboard will start when this completes."
+    )
+    current, steps = catalog_progress()
+    with st.status(current or "Starting initialization…", expanded=True) as status:
+        for step in steps:
+            st.write(step)
+        if current and (not steps or steps[-1] != current):
+            st.write(current)
+        err = catalog_error()
+        if err:
+            status.update(label="Retrying after error", state="error")
+            st.warning(err)
+    time.sleep(1)
+    st.rerun()
+
+show_data_status()
 
 # Start application
 pg.run()

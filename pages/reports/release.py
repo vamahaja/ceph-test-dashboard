@@ -2,21 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 
 import streamlit as st
 
 from libs.config import get_release_branches
-from libs.exceptions import ConfigError, PaddlesAPIError
 from libs.pulpito import base_url
-from libs.refresh import (
-    ensure_payload,
-    new_store,
-    patch_due,
-    refresh_every,
-    utc_day_end_exclusive,
-    utc_day_start,
-)
+from libs.refresh import get_catalog, utc_day_start
 from libs.reports.jobs import JobsStats
 from libs.reports.testruns import TestRunsStats
 from libs.reports.utils import as_utc
@@ -48,72 +40,6 @@ _RELEASE_RUN_COLUMNS = (
 )
 
 
-@st.cache_resource
-def _release_runs_store() -> dict:
-    return new_store()
-
-
-@st.cache_resource
-def _release_jobs_store() -> dict:
-    return new_store()
-
-
-def _ensure_release_runs(branch: str, start: date, end: date):
-    """Load posted runs for one release branch (no per-run job fetch)."""
-
-    def load_full():
-        runs = TestRunsStats.posted_between(start, end, branch=branch)
-        return runs.testruns, []
-
-    def load_recent(patch_since: datetime):
-        runs = TestRunsStats.since(patch_since, branch=branch)
-        return runs.testruns, []
-
-    return ensure_payload(
-        _release_runs_store(),
-        key=(branch, start.isoformat(), end.isoformat()),
-        load_full=load_full,
-        load_recent=load_recent,
-        keep_since=utc_day_start(start),
-        keep_until=utc_day_end_exclusive(end),
-        spinner_full=f"Loading {branch} release runs…",
-    )
-
-
-def _ensure_release_jobs(
-    branch: str,
-    start: date,
-    end: date,
-    testruns: list,
-):
-    """Fetch jobs only for the selected branch's runs."""
-
-    def load_full():
-        jobs = JobsStats.for_testruns(testruns)
-        return testruns, jobs.jobs
-
-    def load_recent(patch_since: datetime):
-        runs = TestRunsStats.since(patch_since, branch=branch)
-        jobs = JobsStats.for_testruns(runs.testruns)
-        return runs.testruns, jobs.jobs
-
-    return ensure_payload(
-        _release_jobs_store(),
-        key=(branch, start.isoformat(), end.isoformat()),
-        load_full=load_full,
-        load_recent=load_recent,
-        keep_since=utc_day_start(start),
-        keep_until=utc_day_end_exclusive(end),
-        spinner_full=f"Loading jobs for `{branch}`…",
-    )
-
-
-@st.fragment(run_every=refresh_every())
-def _periodic_release_refresh() -> None:
-    if patch_due(_release_runs_store()) or patch_due(_release_jobs_store()):
-        st.rerun()
-
-
 st.markdown(
     "<h1 style='text-align: center;'>📦 Release Health Dashboard</h1>",
     unsafe_allow_html=True,
@@ -130,15 +56,14 @@ selected_branch = sidebar_branch_select(branches, prefix="release")
 time_window = sidebar_time_window(prefix="release")
 start_date, end_date = time_window.start, time_window.end
 
-try:
-    payload_runs, _, loaded_at = _ensure_release_runs(
-        selected_branch, start_date, end_date
-    )
-except (PaddlesAPIError, ConfigError) as exc:
-    st.warning(f"Could not load release data: {exc}")
-    st.stop()
-
-all_runs = TestRunsStats.from_testruns(payload_runs)
+catalog = get_catalog()
+all_runs = (
+    TestRunsStats.from_testruns(catalog.runs)
+    .posted_since(utc_day_start(start_date))
+    .for_branch(selected_branch)
+)
+all_jobs = JobsStats.from_jobs(catalog.jobs)
+loaded_at = catalog.loaded_at
 
 if not all_runs.testruns:
     st.warning(
@@ -146,19 +71,6 @@ if not all_runs.testruns:
         f"in the selected window ({time_window.label})."
     )
     st.stop()
-
-try:
-    _, payload_jobs, jobs_loaded_at = _ensure_release_jobs(
-        selected_branch, start_date, end_date, all_runs.testruns
-    )
-except (PaddlesAPIError, ConfigError) as exc:
-    st.warning(f"Could not load release jobs: {exc}")
-    st.stop()
-
-_periodic_release_refresh()
-
-loaded_at = jobs_loaded_at or loaded_at
-all_jobs = JobsStats.from_jobs(payload_jobs)
 
 all_suites = sorted({run.suite for run in all_runs.testruns if run.suite})
 selected_suites = sidebar_suite_filter(

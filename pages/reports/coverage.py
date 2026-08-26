@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 
 import pandas as pd
 import plotly.express as px
@@ -14,16 +14,8 @@ from libs.defaults import (
     STATUS_COLOR_MAP,
     STATUS_FAILING,
 )
-from libs.exceptions import ConfigError, PaddlesAPIError
 from libs.pulpito import base_url, job_link_column, job_url, run_link_column, run_url
-from libs.refresh import (
-    ensure_payload,
-    new_store,
-    patch_due,
-    refresh_every,
-    utc_day_end_exclusive,
-    utc_day_start,
-)
+from libs.refresh import get_catalog, utc_day_start
 from libs.reports.jobs import JobsStats
 from libs.reports.models import Job
 from libs.reports.testruns import TestRunsStats
@@ -51,73 +43,6 @@ _COVERAGE_RUN_COLUMNS = (
     "total_jobs",
     "posted",
 )
-
-
-@st.cache_resource
-def _coverage_runs_store() -> dict:
-    return new_store()
-
-
-@st.cache_resource
-def _coverage_jobs_store() -> dict:
-    return new_store()
-
-
-def _ensure_coverage_runs(start: date, end: date):
-    """Load posted runs for the window (no per-run job fetch)."""
-
-    def load_full():
-        runs = TestRunsStats.posted_between(start, end)
-        return runs.testruns, []
-
-    def load_recent(patch_since: datetime):
-        runs = TestRunsStats.since(patch_since)
-        return runs.testruns, []
-
-    return ensure_payload(
-        _coverage_runs_store(),
-        key=(start.isoformat(), end.isoformat()),
-        load_full=load_full,
-        load_recent=load_recent,
-        keep_since=utc_day_start(start),
-        keep_until=utc_day_end_exclusive(end),
-        spinner_full="Loading recent runs…",
-    )
-
-
-def _ensure_coverage_jobs(
-    start: date,
-    end: date,
-    suite: str,
-    testruns: list,
-):
-    """Fetch jobs only for the selected suite's runs."""
-
-    def load_full():
-        jobs = JobsStats.for_testruns(testruns)
-        return testruns, jobs.jobs
-
-    def load_recent(patch_since: datetime):
-        runs = TestRunsStats.since(patch_since, suite=suite)
-        scoped = [run for run in runs.testruns if run.suite == suite]
-        jobs = JobsStats.for_testruns(scoped)
-        return scoped, jobs.jobs
-
-    return ensure_payload(
-        _coverage_jobs_store(),
-        key=(start.isoformat(), end.isoformat(), suite),
-        load_full=load_full,
-        load_recent=load_recent,
-        keep_since=utc_day_start(start),
-        keep_until=utc_day_end_exclusive(end),
-        spinner_full=f"Loading jobs for `{suite}`…",
-    )
-
-
-@st.fragment(run_every=refresh_every())
-def _periodic_coverage_refresh() -> None:
-    if patch_due(_coverage_runs_store()) or patch_due(_coverage_jobs_store()):
-        st.rerun()
 
 
 def _table_height(rows: int, *, cap: int = 800, min_rows: int = 1) -> int:
@@ -220,13 +145,11 @@ st.sidebar.header("Filters")
 time_window = sidebar_time_window(prefix="coverage")
 start_date, end_date = time_window.start, time_window.end
 
-try:
-    payload_runs, _, loaded_at = _ensure_coverage_runs(start_date, end_date)
-except (PaddlesAPIError, ConfigError) as exc:
-    st.warning(f"Could not load coverage data: {exc}")
-    st.stop()
-
-window_runs = TestRunsStats.from_testruns(payload_runs)
+catalog = get_catalog()
+window_runs = TestRunsStats.from_testruns(catalog.runs).posted_since(
+    utc_day_start(start_date)
+)
+loaded_at = catalog.loaded_at
 if not window_runs.testruns:
     st.warning(f"No runs found in the selected window ({time_window.label}).")
     st.stop()
@@ -248,18 +171,7 @@ if not runs.testruns:
     st.warning(f"No runs found for suite **{selected_suite}**.")
     st.stop()
 
-try:
-    _, payload_jobs, jobs_loaded_at = _ensure_coverage_jobs(
-        start_date, end_date, selected_suite, runs.testruns
-    )
-except (PaddlesAPIError, ConfigError) as exc:
-    st.warning(f"Could not load coverage jobs: {exc}")
-    st.stop()
-
-_periodic_coverage_refresh()
-
-loaded_at = jobs_loaded_at or loaded_at
-jobs = JobsStats.from_jobs(payload_jobs).for_run_set(runs.testruns)
+jobs = JobsStats.from_jobs(catalog.jobs).for_run_set(runs.testruns)
 
 sync_query_params(
     {

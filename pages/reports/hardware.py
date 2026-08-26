@@ -8,7 +8,7 @@ Architecture comes from live Paddles ``/nodes/`` inventory.
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 
 import pandas as pd
 import plotly.express as px
@@ -19,14 +19,7 @@ from libs.defaults import STATUS_COLOR_MAP
 from libs.exceptions import ConfigError, PaddlesAPIError
 from libs.reports.hardware import HardwareStats
 from libs.pulpito import base_url, job_link_column, job_url, run_link_column, run_url
-from libs.refresh import (
-    ensure_payload,
-    new_store,
-    patch_due,
-    refresh_every,
-    utc_day_end_exclusive,
-    utc_day_start,
-)
+from libs.refresh import get_catalog, utc_day_start
 from libs.reports.jobs import JobsStats
 from libs.reports.models import GroupReliabilityStat, Job
 from libs.reports.testruns import TestRunsStats
@@ -63,78 +56,6 @@ _HW_RUN_COLUMNS = (
 @st.cache_data(ttl=get_refresh_seconds())
 def _load_arch_map() -> dict[str, str]:
     return HardwareStats.load_arch_map()
-
-
-@st.cache_resource
-def _hardware_runs_store() -> dict:
-    return new_store()
-
-
-@st.cache_resource
-def _hardware_jobs_store() -> dict:
-    return new_store()
-
-
-def _ensure_hardware_runs(start: date, end: date):
-    """Load posted runs for the window (no per-run job fetch)."""
-
-    def load_full():
-        window = HardwareStats.posted_between(start, end)
-        return window.runs.testruns, []
-
-    def load_recent(patch_since: datetime):
-        runs = TestRunsStats.since(patch_since)
-        return runs.testruns, []
-
-    return ensure_payload(
-        _hardware_runs_store(),
-        key=(start.isoformat(), end.isoformat()),
-        load_full=load_full,
-        load_recent=load_recent,
-        keep_since=utc_day_start(start),
-        keep_until=utc_day_end_exclusive(end),
-        spinner_full="Loading recent runs…",
-    )
-
-
-def _ensure_hardware_jobs(
-    start: date,
-    end: date,
-    machine_type: str,
-    testruns: list,
-):
-    """Fetch jobs only for the selected machine type's runs."""
-
-    def load_full():
-        scoped = HardwareStats.from_testruns_jobs(testruns, []).with_jobs()
-        return testruns, scoped.jobs.jobs
-
-    def load_recent(patch_since: datetime):
-        recent = TestRunsStats.since(patch_since)
-        wanted = (machine_type or "").strip().lower()
-        scoped_runs = [
-            run
-            for run in recent.testruns
-            if (run.machine_type or "").strip().lower() == wanted
-        ]
-        scoped = HardwareStats.from_testruns_jobs(scoped_runs, []).with_jobs()
-        return scoped_runs, scoped.jobs.jobs
-
-    return ensure_payload(
-        _hardware_jobs_store(),
-        key=(start.isoformat(), end.isoformat(), machine_type),
-        load_full=load_full,
-        load_recent=load_recent,
-        keep_since=utc_day_start(start),
-        keep_until=utc_day_end_exclusive(end),
-        spinner_full=f"Loading jobs for `{machine_type}`…",
-    )
-
-
-@st.fragment(run_every=refresh_every())
-def _periodic_hardware_refresh() -> None:
-    if patch_due(_hardware_runs_store()) or patch_due(_hardware_jobs_store()):
-        st.rerun()
 
 
 def _table_height(rows: int, *, cap: int = 800, min_rows: int = 1) -> int:
@@ -253,13 +174,17 @@ st.sidebar.header("Filters")
 time_window = sidebar_time_window(prefix="hardware")
 start_date, end_date = time_window.start, time_window.end
 
+catalog = get_catalog()
 try:
-    payload_runs, _, loaded_at = _ensure_hardware_runs(start_date, end_date)
     arch_map = _load_arch_map()
 except (PaddlesAPIError, ConfigError) as exc:
     st.warning(f"Could not load hardware data: {exc}")
     st.stop()
 
+payload_runs = TestRunsStats.from_testruns(catalog.runs).posted_since(
+    utc_day_start(start_date)
+).testruns
+loaded_at = catalog.loaded_at
 window = HardwareStats.from_testruns_jobs(
     payload_runs, [], arch_by_machine_type=arch_map
 )
@@ -287,20 +212,9 @@ if not scoped_runs.runs.testruns:
     st.warning(f"No runs found for machine type **{selected_mt}**.")
     st.stop()
 
-try:
-    _, payload_jobs, jobs_loaded_at = _ensure_hardware_jobs(
-        start_date, end_date, selected_mt, scoped_runs.runs.testruns
-    )
-except (PaddlesAPIError, ConfigError) as exc:
-    st.warning(f"Could not load hardware jobs: {exc}")
-    st.stop()
-
-_periodic_hardware_refresh()
-
-loaded_at = jobs_loaded_at or loaded_at
 scoped = HardwareStats.from_testruns_jobs(
     scoped_runs.runs.testruns,
-    payload_jobs,
+    catalog.jobs,
     arch_by_machine_type=arch_map,
 )
 

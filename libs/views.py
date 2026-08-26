@@ -20,6 +20,7 @@ from libs.defaults import (
     status_row_styles,
 )
 from libs.pulpito import run_link_column, run_url
+from libs.refresh import catalog_generation
 from libs.reports.jobs import JobsStats
 from libs.reports.models import (
     ClusterHealthSnapshot,
@@ -101,7 +102,6 @@ _WINDOW_BY_QUERY = {
 }
 _QUERY_BY_WINDOW = {label: key for key, label in _WINDOW_BY_QUERY.items()}
 _DEFAULT_WINDOW = "Last 24 hours"
-TIME_WINDOW_MAX_DAYS = max(_WINDOW_DAYS.values())
 
 
 class TimeWindow(NamedTuple):
@@ -135,6 +135,24 @@ def sidebar_time_window(*, prefix: str, label: str = "Time window") -> TimeWindo
         end=end,
         query=_QUERY_BY_WINDOW[window_label],
     )
+
+
+def show_data_status() -> None:
+    """Silently rerun when a new catalog lands."""
+    _watch_catalog_updates()
+
+
+@st.fragment(run_every=timedelta(seconds=20))
+def _watch_catalog_updates() -> None:
+    """Rerun the page when the background catalog is replaced."""
+    generation = catalog_generation()
+    seen = st.session_state.get("_catalog_seen_generation")
+    if seen is None:
+        st.session_state["_catalog_seen_generation"] = generation
+        return
+    if generation > seen:
+        st.session_state["_catalog_seen_generation"] = generation
+        st.rerun()
 
 
 def sidebar_branch_select(branches: list[str], *, prefix: str) -> str:
@@ -289,7 +307,7 @@ def show_scope_caption(
     loaded_at: datetime | None = None,
     now: datetime | None = None,
 ) -> None:
-    """Row counts and optional cache age under the health card."""
+    """Row counts and catalog timestamp under the health card."""
     parts = [
         f"{len(runs.testruns):,} runs",
         f"{jobs.summary.cnt_jobs:,} jobs",
@@ -298,11 +316,14 @@ def show_scope_caption(
         ts = as_utc(loaded_at)
         ref = as_utc(now) or datetime.now(timezone.utc)
         if ts is not None:
+            stamp = ts.strftime("%Y-%m-%d %H:%M UTC")
             seconds = max(0, (ref - ts).total_seconds())
             if seconds < 60:
-                parts.append("loaded just now")
+                parts.append(f"Last updated {stamp}")
             else:
-                parts.append(f"loaded {format_age(loaded_at, now)} ago")
+                parts.append(
+                    f"Last updated {stamp} ({format_age(loaded_at, now)} ago)"
+                )
     st.caption(" · ".join(parts))
 
 

@@ -1,45 +1,61 @@
-"""Process-wide report payload cache shared by Overview and report pages.
+"""Process-wide 30-day catalog with clock-aligned background refresh.
 
-Each filter key keeps one snapshot. All sessions are served that snapshot
-until ``[cache] refresh_minutes`` elapses, then the last interval is merged
-in. Switching filters does not drop other cached keys.
+The first process start loads the last 30 days of runs and jobs. A daemon
+then reloads that same 30-day window on each ``refresh_minutes`` clock
+boundary (default: every hour at :00 UTC) and replaces the published
+snapshot so a refresh never blanks the UI.
 """
 
 from __future__ import annotations
 
+import logging
 import threading
-from collections.abc import Callable
+import time
 from datetime import date, datetime, timedelta, timezone
-
-import streamlit as st
+from typing import NamedTuple
 
 from libs.config import get_refresh_minutes
+from libs.defaults import DEFAULT_CATALOG_DAYS
+from libs.reports.jobs import JobsStats
 from libs.reports.models import Job, TestRun
+from libs.reports.testruns import TestRunsStats
 from libs.reports.utils import as_utc
 
-LoadFn = Callable[[], tuple[list[TestRun], list[Job]]]
-RecentFn = Callable[[datetime], tuple[list[TestRun], list[Job]]]
-TrimFn = Callable[[list[TestRun]], list[TestRun]]
+_LOG = logging.getLogger(__name__)
+_RETRY_SECONDS = 30
+
+_lock = threading.Lock()
+_thread: threading.Thread | None = None
+_state: dict = {
+    "ready": False,
+    "refreshing": False,
+    "error": None,
+    "runs": [],
+    "jobs": [],
+    "loaded_at": None,
+    "generation": 0,
+    "progress": "Starting initialization…",
+    "progress_log": [],
+}
+
+
+class CatalogSnapshot(NamedTuple):
+    """Published catalog view. Treat ``runs`` / ``jobs`` as immutable."""
+
+    runs: list[TestRun]
+    jobs: list[Job]
+    loaded_at: datetime | None
+    generation: int
 
 
 def refresh_every() -> timedelta:
-    """Configured snapshot lifetime / incremental refresh interval."""
+    """Configured background refresh interval."""
     return timedelta(minutes=get_refresh_minutes())
 
 
 def refresh_seconds() -> int:
-    """Snapshot lifetime in seconds (for ``@st.cache_data`` TTLs)."""
+    """Refresh interval in seconds (for ``@st.cache_data`` TTLs)."""
     return get_refresh_minutes() * 60
-
-
-def new_store() -> dict:
-    """Process-wide multi-key payload cache."""
-    return {
-        "entries": {},
-        "key_locks": {},
-        "active_key": None,
-        "lock": threading.Lock(),
-    }
 
 
 def utc_day_start(day: date) -> datetime:
@@ -50,205 +66,190 @@ def utc_day_end_exclusive(day: date) -> datetime:
     return utc_day_start(day) + timedelta(days=1)
 
 
-def _interval() -> timedelta:
-    return refresh_every()
-
-
-def _is_due(stamped: datetime | None, now: datetime, interval: timedelta) -> bool:
-    ts = as_utc(stamped)
-    if ts is None:
-        return False
-    return now - ts >= interval
-
-
-def _legacy_entry(store: dict) -> dict | None:
-    if store.get("loaded_at") is None:
-        return None
-    return {
-        "runs": list(store.get("runs") or []),
-        "jobs": list(store.get("jobs") or []),
-        "loaded_at": store.get("loaded_at"),
-        "patched_at": store.get("patched_at") or store.get("loaded_at"),
-        "accessed_at": store.get("patched_at") or store.get("loaded_at"),
-    }
-
-
-def _entries(store: dict) -> dict:
-    entries = store.setdefault("entries", {})
-    if not entries and store.get("key") is not None:
-        legacy = _legacy_entry(store)
-        if legacy is not None:
-            entries[store["key"]] = legacy
-    return entries
-
-
-def patch_due(store: dict, now: datetime | None = None) -> bool:
-    """True when any cached snapshot has reached the refresh interval."""
+def catalog_keep_since(now: datetime | None = None) -> datetime:
+    """Oldest posted time retained in the catalog (rolling 30 days)."""
     ref = as_utc(now) or datetime.now(timezone.utc)
-    interval = _interval()
-    entries = store.get("entries")
-    if entries:
-        return any(
-            _is_due(
-                entry.get("patched_at") or entry.get("loaded_at"),
-                ref,
-                interval,
-            )
-            for entry in entries.values()
+    return ref - timedelta(days=DEFAULT_CATALOG_DAYS)
+
+
+def next_clock_boundary(now: datetime, minutes: int) -> datetime:
+    """Next UTC clock time aligned to ``minutes`` (60 → the next hour :00)."""
+    step = max(1, int(minutes))
+    floored = now.replace(second=0, microsecond=0)
+    if 60 % step == 0:
+        nxt_min = ((floored.minute // step) + 1) * step
+        hour = floored.hour
+        day = floored.date()
+        if nxt_min >= 60:
+            nxt_min = 0
+            hour += 1
+            if hour >= 24:
+                hour = 0
+                day = day + timedelta(days=1)
+        return datetime(
+            day.year, day.month, day.day, hour, nxt_min, tzinfo=timezone.utc
         )
-    return _is_due(
-        store.get("patched_at") or store.get("loaded_at"),
-        ref,
-        interval,
-    )
+    return now + timedelta(minutes=step)
 
 
-def merge_runs(
-    existing: list[TestRun],
-    incoming: list[TestRun],
+def catalog_is_ready() -> bool:
+    with _lock:
+        return bool(_state["ready"])
+
+
+def catalog_is_refreshing() -> bool:
+    with _lock:
+        return bool(_state["refreshing"])
+
+
+def catalog_error() -> str | None:
+    with _lock:
+        err = _state["error"]
+    return str(err) if err else None
+
+
+def catalog_progress() -> tuple[str, list[str]]:
+    """Current progress line and completed initialization steps."""
+    with _lock:
+        return (
+            str(_state.get("progress") or ""),
+            list(_state.get("progress_log") or []),
+        )
+
+
+def catalog_generation() -> int:
+    with _lock:
+        return int(_state["generation"] or 0)
+
+
+def catalog_loaded_at() -> datetime | None:
+    with _lock:
+        return _state["loaded_at"]
+
+
+def get_catalog() -> CatalogSnapshot:
+    """Return the last published snapshot (never blocks on a patch)."""
+    with _lock:
+        return CatalogSnapshot(
+            runs=_state["runs"],
+            jobs=_state["jobs"],
+            loaded_at=_state["loaded_at"],
+            generation=int(_state["generation"] or 0),
+        )
+
+
+def start_catalog() -> None:
+    """Start the catalog thread once per process."""
+    global _thread
+    with _lock:
+        if _thread is not None and _thread.is_alive():
+            return
+        _thread = threading.Thread(
+            target=_catalog_loop,
+            name="catalog-refresh",
+            daemon=True,
+        )
+        _thread.start()
+
+
+def _set(**updates) -> None:
+    with _lock:
+        _state.update(updates)
+
+
+def _progress(message: str, *, log: bool = False) -> None:
+    with _lock:
+        _state["progress"] = message
+        if log:
+            steps = list(_state.get("progress_log") or [])
+            if not steps or steps[-1] != message:
+                steps.append(message)
+            _state["progress_log"] = steps
+
+
+def _load_window(
+    since: datetime,
     *,
-    keep_since: datetime,
-    keep_until: datetime | None = None,
-) -> list[TestRun]:
-    """Upsert incoming runs and drop rows outside ``[keep_since, keep_until)``."""
-    by_name = {run.name: run for run in existing if run.name}
-    for run in incoming:
-        if run.name:
-            by_name[run.name] = run
-    keep_utc = as_utc(keep_since)
-    until_utc = as_utc(keep_until)
-    rows = []
-    for run in by_name.values():
-        posted = as_utc(run.posted)
-        if posted is None:
-            rows.append(run)
-            continue
-        if keep_utc is not None and posted < keep_utc:
-            continue
-        if until_utc is not None and posted >= until_utc:
-            continue
-        rows.append(run)
-    rows.sort(key=lambda run: as_utc(run.posted) or keep_utc, reverse=True)
-    return rows
+    until: datetime | None = None,
+    announce: bool = False,
+) -> tuple[list[TestRun], list[Job]]:
+    days = DEFAULT_CATALOG_DAYS
+    if announce:
+        _progress(f"Fetching testruns from the last {days} days…", log=True)
+    runs = TestRunsStats.since(since, until=until)
+    n_runs = len(runs.testruns)
+    if announce:
+        _progress(f"Fetched {n_runs:,} testruns", log=True)
+    if not n_runs:
+        return [], []
+
+    if announce:
+        _progress(f"Fetching jobs for {n_runs:,} testruns…", log=True)
+
+    def on_jobs_progress(done: int, total: int) -> None:
+        if announce:
+            _progress(f"Fetching jobs ({done:,} / {total:,} testruns)…")
+
+    jobs = JobsStats.for_testruns(runs.testruns, on_progress=on_jobs_progress)
+    if announce:
+        _progress(f"Loaded {len(jobs.jobs):,} jobs", log=True)
+    return runs.testruns, jobs.jobs
 
 
-def merge_jobs(existing: list[Job], incoming: list[Job]) -> list[Job]:
-    """Replace jobs for runs present in ``incoming``, keep the rest."""
-    refreshed = {job.run_name for job in incoming if job.run_name}
-    kept = [job for job in existing if job.run_name not in refreshed]
-    return kept + list(incoming)
-
-
-def jobs_for_runs(jobs: list[Job], runs: list[TestRun]) -> list[Job]:
-    """Drop jobs whose run is no longer in ``runs``."""
-    names = {run.name for run in runs if run.name}
-    return [job for job in jobs if job.run_name in names]
-
-
-def _lock_for_key(store: dict, key: object) -> threading.Lock:
-    global_lock = store.setdefault("lock", threading.Lock())
-    with global_lock:
-        store["active_key"] = key
-        locks = store.setdefault("key_locks", {})
-        if key not in locks:
-            locks[key] = threading.Lock()
-        return locks[key]
-
-
-def _evict_idle(store: dict, now: datetime, keep: object) -> None:
-    """Drop filter keys unused for two refresh intervals."""
-    idle_after = _interval() * 2
-    global_lock = store.setdefault("lock", threading.Lock())
-    with global_lock:
-        entries = store.get("entries") or {}
-        dead = []
-        locks = store.setdefault("key_locks", {})
-        for cache_key, entry in entries.items():
-            if cache_key == keep:
-                continue
-            held = locks.get(cache_key)
-            if held is not None and held.locked():
-                continue
-            stamped = as_utc(entry.get("accessed_at") or entry.get("patched_at"))
-            if stamped is None or now - stamped >= idle_after:
-                dead.append(cache_key)
-        for cache_key in dead:
-            entries.pop(cache_key, None)
-            locks.pop(cache_key, None)
-
-
-def ensure_payload(
-    store: dict,
+def _publish(
+    runs: list[TestRun],
+    jobs: list[Job],
     *,
-    key: object,
-    load_full: LoadFn,
-    load_recent: RecentFn,
-    keep_since: datetime,
-    keep_until: datetime | None = None,
-    trim_runs: TrimFn | None = None,
-    spinner_full: str,
-    spinner_patch: str | None = None,
-) -> tuple[list[TestRun], list[Job], datetime | None]:
-    """Return the cached snapshot for ``key``; load or patch only when due.
-
-    All sessions share the same snapshot for a key until
-    ``refresh_minutes`` elapses.
-    """
-    now = datetime.now(timezone.utc)
-    minutes = get_refresh_minutes()
-    interval = timedelta(minutes=minutes)
-    entries = _entries(store)
-    klock = _lock_for_key(store, key)
-
-    with klock:
-        entry = entries.get(key)
-        if entry is not None:
-            entry["accessed_at"] = now
-        if entry is None or entry.get("loaded_at") is None:
-            with st.spinner(spinner_full):
-                runs, jobs = load_full()
-            entry = {
-                "runs": list(runs),
-                "jobs": list(jobs),
-                "loaded_at": now,
-                "patched_at": now,
-                "accessed_at": now,
-            }
-            entries[key] = entry
-            return list(entry["runs"]), list(entry["jobs"]), entry["patched_at"]
-
-        stamped = as_utc(entry.get("patched_at") or entry.get("loaded_at"))
-        if stamped is not None and now - stamped >= interval:
-            patch_since = now - interval
-            text = spinner_patch or (
-                f"Refreshing last {minutes} minutes of data…"
-            )
-            with st.spinner(text):
-                recent_runs, recent_jobs = load_recent(patch_since)
-            entry["runs"] = merge_runs(
-                entry["runs"],
-                recent_runs,
-                keep_since=keep_since,
-                keep_until=keep_until,
-            )
-            if trim_runs is not None:
-                entry["runs"] = trim_runs(entry["runs"])
-            entry["jobs"] = jobs_for_runs(
-                merge_jobs(entry["jobs"], recent_jobs),
-                entry["runs"],
-            )
-            entry["patched_at"] = now
-
-        entry["accessed_at"] = now
-        runs_out = list(entry["runs"])
-        jobs_out = list(entry["jobs"])
-        patched_at = entry["patched_at"]
-
-    _evict_idle(store, now, key)
-    return runs_out, jobs_out, patched_at
+    loaded_at: datetime,
+) -> None:
+    with _lock:
+        _state["runs"] = runs
+        _state["jobs"] = jobs
+        _state["loaded_at"] = loaded_at
+        _state["generation"] = int(_state["generation"] or 0) + 1
+        _state["ready"] = True
+        _state["refreshing"] = False
+        _state["error"] = None
 
 
-def periodic_rerun(store: dict) -> None:
-    """Rerun the page when the active snapshot is due for a patch."""
-    if patch_due(store):
-        st.rerun()
+def _sleep_until(deadline: datetime) -> None:
+    while True:
+        remaining = (deadline - datetime.now(timezone.utc)).total_seconds()
+        if remaining <= 0:
+            return
+        time.sleep(min(remaining, 5.0))
+
+
+def _catalog_loop() -> None:
+    while True:
+        keep_since = catalog_keep_since()
+        ready = catalog_is_ready()
+        try:
+            if not ready:
+                _progress("Starting initialization…", log=True)
+                _LOG.info("Loading last %s days of catalog data", DEFAULT_CATALOG_DAYS)
+                runs, jobs = _load_window(keep_since, announce=True)
+                _progress("Initialization complete", log=True)
+            else:
+                _set(refreshing=True, error=None)
+                _LOG.info(
+                    "Reloading last %s days of catalog data", DEFAULT_CATALOG_DAYS
+                )
+                runs, jobs = _load_window(keep_since)
+            if ready and not runs:
+                _LOG.warning(
+                    "Hourly reload returned no testruns; keeping current catalog"
+                )
+                _set(refreshing=False)
+            else:
+                _publish(runs, jobs, loaded_at=datetime.now(timezone.utc))
+                _LOG.info("Catalog ready: %s runs, %s jobs", len(runs), len(jobs))
+        except Exception as exc:
+            _LOG.exception("Catalog refresh failed")
+            _set(refreshing=False, error=str(exc))
+            time.sleep(_RETRY_SECONDS)
+            continue
+
+        _sleep_until(
+            next_clock_boundary(datetime.now(timezone.utc), get_refresh_minutes())
+        )
