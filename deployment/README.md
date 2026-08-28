@@ -46,29 +46,35 @@ See [`openshift/README.md`](openshift/README.md) for the full OpenShift flow (`d
     branches = tentacle, squid, umbrella
     ```
 
-2. **Build the container image**
+2. **Build the container images**
 
+    Build the dashboard image:
     ```sh
-    podman build --format docker -f deployment/Containerfile -t ceph-test-dashboard:latest .
+    podman build --format docker -f deployment/podman/Containerfile.dashboard -t ceph-test-dashboard:latest .
+    ```
+
+    Build the MCP server image:
+    ```sh
+    podman build --format docker -f deployment/podman/Containerfile.mcp -t ceph-test-dashboard-mcp:latest .
     ```
 
 3. **Start the service**
 
     ```sh
-    podman-compose -f deployment/podman-compose.yaml up -d
+    podman-compose -f deployment/podman/podman-compose.yaml up -d
     ```
 
     To use a custom config file path or port:
 
     ```sh
     CONFIG_FILE=/path/to/config.ini DASHBOARD_PORT=9000 \
-      podman-compose -f deployment/podman-compose.yaml up -d
+      podman-compose -f deployment/podman/podman-compose.yaml up -d
     ```
 
 4. **Verify the deployment**
 
     ```sh
-    podman-compose -f deployment/podman-compose.yaml ps
+    podman-compose -f deployment/podman/podman-compose.yaml ps
     ```
 
     The container should show "Up" status.
@@ -83,19 +89,20 @@ See [`openshift/README.md`](openshift/README.md) for the full OpenShift flow (`d
 |----------|---------|-------------|
 | `CONFIG_FILE` | `~/.config/ceph-test-dashboard.ini` | Path to the config file on the host |
 | `DASHBOARD_PORT` | `8501` | Host port to expose the dashboard on |
+| `MCP_PORT` | `8000` | Host port to expose the MCP server on |
 
 ### Managing the Service
 
 Stop:
 
 ```sh
-podman-compose -f deployment/podman-compose.yaml down
+podman-compose -f deployment/podman/podman-compose.yaml down
 ```
 
 View logs:
 
 ```sh
-podman-compose -f deployment/podman-compose.yaml logs -f
+podman-compose -f deployment/podman/podman-compose.yaml logs -f
 ```
 
 ---

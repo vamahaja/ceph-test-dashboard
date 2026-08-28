@@ -7,3 +7,13 @@ services:
     volumes:
       - ${CONFIG_FILE:-~/.config/ceph-test-dashboard.ini}:/home/appuser/.config/ceph-test-dashboard.ini:ro,Z
     restart: unless-stopped
+
+  mcp:
+    image: ceph-test-dashboard-mcp:latest
+    container_name: ceph-test-dashboard-mcp
+    ports:
+      - "${MCP_PORT:-8000}:8000"
+    volumes:
+      - ${CONFIG_FILE:-~/.config/ceph-test-dashboard.ini}:/home/appuser/.config/ceph-test-dashboard.ini:ro,Z
+    restart: unless-stopped
+

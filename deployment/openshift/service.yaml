@@ -16,3 +16,7 @@ spec:
       port: 8501
       targetPort: http
       protocol: TCP
+    - name: mcp
+      port: 8000
+      targetPort: sse
+      protocol: TCP

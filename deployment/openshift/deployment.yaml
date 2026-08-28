@@ -68,6 +68,51 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 5
             failureThreshold: 3
+        - name: mcp
+          image: ${DASHBOARD_IMAGE}
+          imagePullPolicy: Always
+          ports:
+            - name: sse
+              containerPort: 8000
+              protocol: TCP
+          command: ["python", "llm/mcp/mcp.py"]
+          args: ["--transport", "sse", "--host", "0.0.0.0", "--port", "8000"]
+          env:
+            - name: CEPH_TEST_DASHBOARD_CONFIG
+              value: /home/appuser/.config/ceph-test-dashboard.ini
+          volumeMounts:
+            - name: config
+              mountPath: /home/appuser/.config/ceph-test-dashboard.ini
+              subPath: ceph-test-dashboard.ini
+              readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          livenessProbe:
+            httpGet:
+              path: /sse
+              port: sse
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /sse
+              port: sse
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
       volumes:
         - name: config
           configMap:

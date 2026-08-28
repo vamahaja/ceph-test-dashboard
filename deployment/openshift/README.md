@@ -7,7 +7,7 @@ Deploy the Ceph Test Dashboard on OpenShift using plain `Deployment` / `Service`
 - **OpenShift** cluster and **`oc`** installed; you must be logged in (`oc whoami` succeeds).
 - **Permissions** to create namespaces, Deployments, Services, Routes, and ConfigMaps.
 - **`envsubst`** — substitutes variables in manifests (usually from the `gettext` package).
-- **Container image** built and pushed to a registry the cluster can pull (see [Containerfile](../Containerfile)).
+- **Container image** built and pushed to a registry the cluster can pull (see [Containerfile.dashboard](../podman/Containerfile.dashboard)).
 
 Install `envsubst` on Fedora / CentOS / Rocky:
 
@@ -46,7 +46,7 @@ If cert-manager is not available, or you prefer the default OpenShift router cer
 3. Build and push the image (example using the OpenShift internal registry):
 
    ```bash
-   podman build --format docker -f ../Containerfile -t ceph-test-dashboard:latest ../..
+   podman build --format docker -f ../podman/Containerfile.dashboard -t ceph-test-dashboard:latest ../..
    podman tag ceph-test-dashboard:latest "$DASHBOARD_IMAGE"
    podman push "$DASHBOARD_IMAGE"
    ```
