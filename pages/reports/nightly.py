@@ -11,6 +11,7 @@ from libs.defaults import STATUS_FAILING
 from libs.pulpito import base_url
 from libs.refresh import get_catalog
 from libs.reports.jobs import JobsStats
+from libs.reports.email import nightly_runs
 from libs.reports.testruns import TestRunsStats
 from libs.reports.utils import as_utc
 from libs.views import (
@@ -39,19 +40,6 @@ NIGHTLY_RUN_COLUMNS = (
 )
 
 
-def _nightly_run_scope(rows, user: str, start: date, end: date, branch: str = ""):
-    scoped = TestRunsStats.from_testruns(rows).filtered(
-        date_start=start,
-        date_end=end,
-        on="scheduled",
-        user=user,
-        scheduled_only=True,
-    )
-    if branch:
-        scoped = [run for run in scoped if run.branch == branch]
-    return scoped
-
-
 st.markdown(
     "<h1 style='text-align: center;'>Nightly Regression Status</h1>",
     unsafe_allow_html=True,
@@ -68,8 +56,8 @@ time_window = sidebar_time_window(prefix="nightly")
 start_date, end_date = time_window.start, time_window.end
 
 catalog = get_catalog()
-payload_runs = _nightly_run_scope(
-    catalog.runs, nightly_user, start_date, end_date
+payload_runs = nightly_runs(
+    catalog.runs, user=nightly_user, start=start_date, end=end_date
 )
 loaded_at = catalog.loaded_at
 all_runs = TestRunsStats.from_testruns(payload_runs)

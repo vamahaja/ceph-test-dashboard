@@ -47,6 +47,22 @@ DEFAULT_CATALOG_DAYS = 30
 # Branches shown on the Releases report
 DEFAULT_RELEASE_BRANCHES = ("main", "umbrella", "tentacle", "squid")
 
+# [digest] nightly email (Sepia lab SMTP relay)
+DEFAULT_DIGEST_ENABLED = False
+DEFAULT_DIGEST_SMTP_HOST = "relay.front.sepia.ceph.com"
+DEFAULT_DIGEST_SMTP_PORT = 25
+DEFAULT_DIGEST_FROM_ADDR = "ceph-nightly@sepia.ceph.com"
+DEFAULT_DIGEST_NIGHTLY_ANCHOR_HOUR = 6
+DEFAULT_DIGEST_NIGHTLY_ANCHOR_MINUTE = 0
+DEFAULT_DIGEST_DAILY_REPORT_ANCHOR_HOUR = 18
+DEFAULT_DIGEST_DAILY_REPORT_ANCHOR_MINUTE = 0
+DEFAULT_DIGEST_DAILY_LOOKBACK_DAYS = 1
+DEFAULT_DIGEST_WEEKLY_FETCH_DAYS = 21
+DEFAULT_DIGEST_DAILY_FETCH_DAYS = 5
+DEFAULT_DIGEST_SMOKE_SUITE_MATCH = "smoke"
+DEFAULT_DATA_DIR = "/var/lib/ceph-test-dashboard"
+DEFAULT_DIGEST_SQLITE_PATH = "mail-state.sqlite"
+
 STATUS_COMPLETED = frozenset({"pass", "fail", "dead"})
 STATUS_FAILING = frozenset({"fail", "dead"})
 STATUS_ACTIVE = frozenset({"running", "queued", "waiting"})

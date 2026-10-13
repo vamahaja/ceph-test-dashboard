@@ -1,0 +1,26 @@
+id = "weekly_digest"
+enabled = true
+
+[schedule]
+day_of_week = "mon"
+hour = 6
+minute = 0
+
+[window]
+kind = "weekly"
+
+[scope]
+branches = "release"
+suite_filter = "all"
+
+[send]
+when = "always"
+dedupe = "weekly_window"
+fetch_jobs = true
+fetch_days_key = "weekly_fetch_days"
+
+[email]
+show_summary_stats = true
+title = "Weekly nightly digest — {branch}"
+subject = "[ceph nightly] {branch} weekly {period_label} — {badge}"
+runs_heading = "Failed or dead runs"

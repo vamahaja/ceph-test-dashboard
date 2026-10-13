@@ -2,6 +2,8 @@ import time
 
 import streamlit as st
 
+from libs.storage import ensure_data_dir
+from libs.mail_reports import start_mail_scheduler
 from libs.refresh import (
     catalog_error,
     catalog_is_ready,
@@ -62,6 +64,18 @@ hardware = st.Page(
     icon=":material/memory:",
 )
 
+# Archive pages
+weekly_digest_archive = st.Page(
+    "pages/archive/weekly_digest.py",
+    title="Weekly digest",
+    icon=":material/calendar_month:",
+)
+daily_digest_archive = st.Page(
+    "pages/archive/daily_digest.py",
+    title="Daily digest",
+    icon=":material/today:",
+)
+
 # Tools pages
 search = st.Page(
     "pages/tools/search.py",
@@ -71,7 +85,7 @@ search = st.Page(
 alerts = st.Page(
     "pages/tools/alerts.py",
     title="Alerts",
-    icon=":material/notification_important:"
+    icon=":material/notification_important:",
 )
 agent = st.Page(
     "pages/tools/agent.py",
@@ -84,11 +98,14 @@ pg = st.navigation(
     {
         "Dashboard": [overview, testruns, jobs],
         "Reports": [release, nightly, builds, coverage, hardware],
+        "Archive": [weekly_digest_archive, daily_digest_archive],
         "Tools": [search, alerts, agent],
     }
 )
 
+ensure_data_dir()
 start_catalog()
+start_mail_scheduler()
 if not catalog_is_ready():
     st.markdown(
         "<h1 style='text-align: center;'>Initialization</h1>",

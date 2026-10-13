@@ -354,3 +354,23 @@ class FailingTestStat:
     count: int = 0
     pct: float = 0.0
     runs_impacted: int = 0
+
+
+@dataclass(frozen=True)
+class NightlyMailCatalog:
+    """Runs and jobs loaded from Paddles for a single mail window."""
+
+    runs: list[TestRun]
+    jobs: list[Job]
+
+
+@dataclass(frozen=True)
+class MailDelivery:
+    """Rendered message ready for SMTP."""
+
+    subject: str
+    body_plain: str
+    body_html: str
+    state_key: str
+    state_value: str
+

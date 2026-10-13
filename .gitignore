@@ -15,3 +15,6 @@ uv.lock
 
 # OpenShift local deploy config (secrets / cluster-specific values)
 deployment/openshift/dashboard.config
+
+# Local Podman persistent data bind mount
+ceph-test-dashboard-data/

@@ -6,4 +6,5 @@ services:
       - "${DASHBOARD_PORT:-8501}:8501"
     volumes:
       - ${CONFIG_FILE:-~/.config/ceph-test-dashboard.ini}:/home/appuser/.config/ceph-test-dashboard.ini:ro,Z
+      - ${DATA_DIR:-./ceph-test-dashboard-data}:/var/lib/ceph-test-dashboard:Z
     restart: unless-stopped

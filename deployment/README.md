@@ -52,20 +52,30 @@ See [`openshift/README.md`](openshift/README.md) for the full OpenShift flow (`d
     podman build --format docker -f deployment/Containerfile -t ceph-test-dashboard:latest .
     ```
 
-3. **Start the service**
+3. **Create a data directory (persistent volume)**
+
+    Podman mounts a host directory at `/var/lib/ceph-test-dashboard` (same path as OpenShift). Create it once:
+
+    ```sh
+    mkdir -p ./ceph-test-dashboard-data
+    ```
+
+4. **Start the service**
 
     ```sh
     podman-compose -f deployment/podman-compose.yaml up -d
     ```
 
-    To use a custom config file path or port:
+    To use a custom config file path, port, or data directory:
 
     ```sh
-    CONFIG_FILE=/path/to/config.ini DASHBOARD_PORT=9000 \
+    CONFIG_FILE=/path/to/config.ini \
+    DATA_DIR=/path/to/ceph-test-dashboard-data \
+    DASHBOARD_PORT=9000 \
       podman-compose -f deployment/podman-compose.yaml up -d
     ```
 
-4. **Verify the deployment**
+5. **Verify the deployment**
 
     ```sh
     podman-compose -f deployment/podman-compose.yaml ps
@@ -73,15 +83,40 @@ See [`openshift/README.md`](openshift/README.md) for the full OpenShift flow (`d
 
     The container should show "Up" status.
 
-5. **Access the dashboard**
+6. **Access the dashboard**
 
     Open your browser at `http://localhost:8501` (or the custom port you set).
+
+    On first start the app initializes the data volume (marker file). When outbound
+    mail is enabled, SQLite state is stored on that volume (see below).
+
+### Mail state (SQLite)
+
+When `[digest] enabled = true`, the Streamlit app and `ceph-test-dashboard-digest`
+share one SQLite database. The default file is **`mail-state.sqlite`** under
+`[storage] data_dir` (Podman: `DATA_DIR` bind mount; OpenShift: PVC at
+`/var/lib/ceph-test-dashboard`). Relative `sqlite_path` values in config are resolved
+under that directory.
+
+| Table | Purpose |
+|-------|---------|
+| `weekly_sent` | Dedup only: last successful weekly digest window end per branch |
+| `daily_smoke_sent` | Dedup only: daily smoke send recorded per branch + UTC day |
+| `sent_mail` | Read-only archive for the UI (HTML body, subject, recipients, time) |
+
+The database is created on first successful send. APScheduler in the dashboard process
+updates dedup tables after each send; the CLI uses the same file when run manually.
+There is no automatic purge of `sent_mail` yet—plan volume size accordingly.
+
+Archive pages (**Weekly digest** / **Daily digest**) query `sent_mail` only; they do
+not drive scheduling.
 
 ### Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CONFIG_FILE` | `~/.config/ceph-test-dashboard.ini` | Path to the config file on the host |
+| `DATA_DIR` | `./ceph-test-dashboard-data` | Host dir mounted at `/var/lib/ceph-test-dashboard` |
 | `DASHBOARD_PORT` | `8501` | Host port to expose the dashboard on |
 
 ### Managing the Service

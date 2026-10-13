@@ -1,0 +1,27 @@
+id = "daily_smoke"
+enabled = true
+
+[schedule]
+hour = 18
+minute = 0
+
+[window]
+kind = "daily"
+lookback_days_key = "daily_lookback_days"
+
+[scope]
+branches = "active"
+suite_filter = "smoke"
+
+[send]
+when = "failing"
+dedupe = "daily"
+fetch_jobs = false
+fetch_days_key = "daily_fetch_days"
+
+[email]
+show_summary_stats = false
+title = "Nightly report — {branch}"
+subject = "[ceph nightly] {branch} smoke FAILED ({failed_count} run(s))"
+runs_heading = "Failing runs"
+badge = "Smoke failed"

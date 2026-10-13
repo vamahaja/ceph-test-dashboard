@@ -24,5 +24,21 @@ data:
     [release]
     branches = main, umbrella, tentacle, squid
 
+    [storage]
+    data_dir = /var/lib/ceph-test-dashboard
+
     [hardware]
     min_runs = 2
+
+    [digest]
+    enabled = true
+    recipients = ${MAIL_RECIPIENTS}
+    smtp_host = relay.front.sepia.ceph.com
+    smtp_port = 25
+    from_addr = ceph-nightly@sepia.ceph.com
+    daily_lookback_days = 1
+    weekly_fetch_days = 21
+    daily_fetch_days = 5
+    smoke_suite_match = smoke
+    sqlite_path = mail-state.sqlite
+    dashboard_base_url = https://${DASHBOARD_ROUTE_HOST}

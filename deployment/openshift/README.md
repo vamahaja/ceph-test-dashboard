@@ -98,7 +98,23 @@ Copy [dashboard.config.tmpl](dashboard.config.tmpl) to `dashboard.config`. The d
 | `PADDLES_BASE_URL` | Paddles API base URL written into the ConfigMap |
 | `PULPITO_BASE_URL` | Pulpito base URL written into the ConfigMap |
 | `NIGHTLY_RUN_USER` | Nightly page run-owner filter |
+| `MAIL_RECIPIENTS` | Comma-separated recipients for `[digest]` (enable in ConfigMap) |
 | `CERT_MANAGER_ISSUER_NAME` | `ClusterIssuer` name (required unless `--skip-cert`) |
+
+## Email reports (optional)
+
+Nightly digest mail uses the Sepia lab relay **`relay.front.sepia.ceph.com:25`** (no auth). The dashboard pod must reach port 25. Set **`[digest] enabled = true`** in [configmap.yaml](configmap.yaml), use a **`from_addr`** `@sepia.ceph.com`, and set `MAIL_RECIPIENTS` in `dashboard.config`.
+
+The **Deployment** declares PVC `ceph-test-dashboard-data` (**100Gi**, ReadWriteOnce) mounted at `/var/lib/ceph-test-dashboard`. Set **`[storage] data_dir`** to that path; mail dedup and other on-disk state live here (`sqlite_path`, default `mail-state.sqlite`). **APScheduler** inside the Streamlit process sends mail on UTC cron (weekly Mon 06:00, daily smoke 18:00 — see `start_mail_scheduler()` in `libs/mail_reports.py`).
+
+Manual runs (optional):
+
+```bash
+ceph-test-dashboard-digest weekly
+ceph-test-dashboard-digest daily-smoke
+```
+
+UI: **Archive → Weekly digest** / **Daily digest**. Reports are defined in `templates/reports/*.toml`; HTML bodies are built in `libs/report_runner.py`.
 
 ## CLI options
 

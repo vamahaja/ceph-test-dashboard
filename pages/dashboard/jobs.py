@@ -159,6 +159,12 @@ if failure_filter:
 
     drill_run_names = st.session_state.get("drill_run_names", [])
     if not drill_run_names:
+        runs_param = _query_str("runs")
+        if runs_param:
+            drill_run_names = [
+                part.strip() for part in runs_param.split(",") if part.strip()
+            ]
+    if not drill_run_names:
         source_label = source_filter or "report"
         st.warning(f"No run names passed from the {source_label} page.")
         st.stop()

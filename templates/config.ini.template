@@ -16,3 +16,26 @@ refresh_minutes = 60
 
 [release]
 branches = main, umbrella, tentacle, squid
+
+[storage]
+# Writable volume (OpenShift PVC or Podman bind mount at this path)
+data_dir = /var/lib/ceph-test-dashboard
+
+[digest]
+enabled = false
+recipients = dev@ceph.io
+smtp_host = relay.front.sepia.ceph.com
+smtp_port = 25
+from_addr = ceph-nightly@sepia.ceph.com
+# Daily smoke: 24h slices ending at daily report time (18:00 UTC); 1 = no overlap day-to-day
+daily_lookback_days = 1
+weekly_fetch_days = 21
+daily_fetch_days = 5
+smoke_suite_match = smoke
+# Optional exact suite names (comma-separated); overrides smoke_suite_match when set
+# smoke_suites =
+# Mail dedup DB (relative paths live under [storage] data_dir)
+sqlite_path = mail-state.sqlite
+# Dashboard origin for job deep links in digest emails (no trailing slash)
+dashboard_base_url = http://localhost:8501
+# Or set env CEPH_TEST_DASHBOARD_BASE_URL (overrides ini when ini is empty)
