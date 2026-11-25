@@ -63,6 +63,9 @@ DEFAULT_DIGEST_SMOKE_SUITE_MATCH = "smoke"
 DEFAULT_DATA_DIR = "/var/lib/ceph-test-dashboard"
 DEFAULT_DIGEST_SQLITE_PATH = "mail-state.sqlite"
 
+# st.Page url_path for Jobs (from pages/dashboard/jobs.py); must match app.py.
+DASHBOARD_JOBS_PAGE_PATH = "jobs"
+
 STATUS_COMPLETED = frozenset({"pass", "fail", "dead"})
 STATUS_FAILING = frozenset({"fail", "dead"})
 STATUS_ACTIVE = frozenset({"running", "queued", "waiting"})

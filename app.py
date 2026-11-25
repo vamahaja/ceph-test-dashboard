@@ -10,6 +10,7 @@ from libs.refresh import (
     catalog_progress,
     start_catalog,
 )
+from libs.defaults import DASHBOARD_JOBS_PAGE_PATH
 from libs.views import show_data_status
 
 
@@ -29,7 +30,8 @@ overview = st.Page(
 jobs = st.Page(
     "pages/dashboard/jobs.py",
     title="Jobs",
-    icon=":material/bug_report:"
+    icon=":material/bug_report:",
+    url_path=DASHBOARD_JOBS_PAGE_PATH,
 )
 testruns = st.Page(
     "pages/dashboard/testruns.py",

@@ -243,6 +243,24 @@ class JobsStats(DataSource):
             if (job.failure_reason or "Unknown failure") == wanted
         ]
 
+    def matching_failure_relaxed(self, reason: str) -> list[Job]:
+        """Like :meth:`matching_failure`, then prefix match for truncated reasons."""
+        exact = self.matching_failure(reason)
+        if exact:
+            return exact
+        wanted = (reason or "").strip()
+        if not wanted:
+            return []
+        if wanted.endswith("..."):
+            prefix = wanted[:-3]
+            if prefix:
+                return [
+                    job
+                    for job in self.failing_jobs
+                    if (job.failure_reason or "").startswith(prefix)
+                ]
+        return []
+
     def filtered(
         self,
         *,

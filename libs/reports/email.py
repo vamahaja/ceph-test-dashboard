@@ -12,7 +12,7 @@ from typing import Sequence
 from urllib.parse import quote, urlencode
 
 from libs.config import get_pulpito_url
-from libs.defaults import DEFAULT_TOP_FAILURE_REASONS
+from libs.defaults import DASHBOARD_JOBS_PAGE_PATH, DEFAULT_TOP_FAILURE_REASONS
 from libs.reports.jobs import JobsStats
 from libs.reports.models import Job, TestRun
 from libs.reports.utils import as_utc
@@ -175,15 +175,32 @@ def _dashboard_jobs_failure_link(
     if not dashboard_base:
         return None
     matching = JobsStats.from_jobs(list(scope_jobs)).matching_failure(reason)
+    if not matching:
+        return None
+    if len(matching) == 1:
+        job = matching[0]
+        run_name = (job.run_name or "").strip()
+        job_id = str(job.job_id or "").strip()
+        if run_name and job_id:
+            query = urlencode(
+                {
+                    "run": run_name,
+                    "job_id": job_id,
+                    "source": "digest",
+                },
+                quote_via=quote,
+            )
+            return f"{dashboard_base}/{DASHBOARD_JOBS_PAGE_PATH}?{query}"
     run_names = list(dict.fromkeys(job.run_name for job in matching if job.run_name))
     if not run_names:
         return None
+    # Short params first so long failure_reason is less likely to be truncated.
     query = urlencode(
-        {
-            "failure_reason": reason,
-            "source": "digest",
-            "runs": ",".join(run_names),
-        },
+        [
+            ("runs", ",".join(run_names)),
+            ("source", "digest"),
+            ("failure_reason", reason),
+        ],
         quote_via=quote,
     )
-    return f"{dashboard_base}/Jobs?{query}"
+    return f"{dashboard_base}/{DASHBOARD_JOBS_PAGE_PATH}?{query}"

@@ -148,8 +148,9 @@ run_filter = _query_str("run")
 job_filter = _query_str("job_id")
 
 # Failure-reason drill-in from Overview / Releases / Nightly / Builds. Keep this
-# contract unchanged: query ``failure_reason`` + ``source``, session
-# ``drill_run_names``, then ``JobsStats.for_run_names`` + ``matching_failure``.
+# contract unchanged: URL ``/jobs`` (``DASHBOARD_JOBS_PAGE_PATH`` in libs.defaults), query
+# ``failure_reason`` + ``source`` + optional ``runs``, session ``drill_run_names``,
+# then ``JobsStats.for_run_names`` + ``matching_failure``.
 if failure_filter:
     st.info(f"Showing jobs with failure: **{failure_filter}**")
     if source_filter:
@@ -177,10 +178,16 @@ if failure_filter:
         st.stop()
 
     if not stats.jobs:
-        st.info("No jobs found for the impacted runs.")
+        st.info(
+            "No jobs found for the impacted runs. "
+            f"Runs requested: {', '.join(drill_run_names)}"
+        )
         st.stop()
 
-    matching = stats.matching_failure(failure_filter)
+    if source_filter == "digest":
+        matching = stats.matching_failure_relaxed(failure_filter)
+    else:
+        matching = stats.matching_failure(failure_filter)
     if not matching:
         st.info("No jobs match the selected failure reason.")
         st.stop()
